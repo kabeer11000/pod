@@ -30,7 +30,7 @@ TARGET_DEL = $(TARGET) $(OBJS)
 
 # Source files
 # Assuming server.cpp is directly inside the 'pod' main directory.
-SRCS = $(wildcard pod/*.cpp)
+SRCS = $(wildcard pod/*.cpp) $(wildcard pod/socket/*.cpp)
 
 # Object files
 OBJS = $(SRCS:.cpp=.o)
@@ -49,6 +49,8 @@ $(TARGET): $(OBJS)
 # Rule to run the executable
 run: $(TARGET)
 	./$(TARGET)
+
+export LD_LIBRARY_PATH=./pod/3rdparty/evpp/build/lib:$LD_LIBRARY_PATH
 
 # Clean rule to remove generated files
 clean:

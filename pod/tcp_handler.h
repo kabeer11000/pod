@@ -10,7 +10,7 @@
 #include "./base64.h"
 #include <vector>
 #include <openssl/sha.h>
-
+#include "./socket/frame.h"
 
 void tcp_handler(
     const evpp::TCPConnPtr &conn,
