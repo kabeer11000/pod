@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pod - High-Performance Real-Time Database</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+          Cantarell, sans-serif;
+        line-height: 1.6;
+        color: white;
+        background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
+        overflow-x: hidden;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 0 20px;
+      }
+
+      /* Animated background */
+      .bg-animation {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: -1;
+        overflow: hidden;
+      }
+
+      .bg-animation::before {
+        content: "";
+        position: absolute;
+        top: -50%;
+        left: -50%;
+        width: 200%;
+        height: 200%;
+        background: radial-gradient(circle, rgba(59, 130, 246, 0.1) 0%, transparent 50%);
+        animation: rotate 20s linear infinite;
+      }
+
+      @keyframes rotate {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* Header */
+      header {
+        padding: 20px 0;
+        position: relative;
+        z-index: 100;
+      }
+
+      nav {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .logo {
+        font-size: 28px;
+        font-weight: 800;
+        color: white;
+        text-decoration: none;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .logo-icon {
+        width: 32px;
+        height: 32px;
+        background: linear-gradient(45deg, #3b82f6, #8b5cf6);
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        font-size: 18px;
+      }
+
+      .nav-links {
+        display: flex;
+        gap: 30px;
+        list-style: none;
+      }
+
+      .nav-links a {
+        color: #e5e7eb;
+        text-decoration: none;
+        font-weight: 500;
+        transition: color 0.3s ease;
+      }
+
+      .nav-links a:hover {
+        color: #3b82f6;
+      }
+
+      /* Hero Section */
+      .hero {
+        text-align: center;
+        padding: 100px 0 120px;
+        position: relative;
+      }
+
+      .hero h1 {
+        font-size: clamp(2.5rem, 5vw, 4rem);
+        font-weight: 900;
+        margin-bottom: 20px;
+        background: linear-gradient(135deg, #ffffff 0%, #3b82f6 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        line-height: 1.2;
+      }
+
+      .hero .subtitle {
+        font-size: 1.3rem;
+        color: #9ca3af;
+        margin-bottom: 40px;
+        max-width: 600px;
+        margin-left: auto;
+        margin-right: auto;
+      }
+
+      .cta-buttons {
+        display: flex;
+        gap: 20px;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-bottom: 60px;
+      }
+
+      .btn {
+        padding: 15px 30px;
+        border-radius: 12px;
+        text-decoration: none;
+        font-weight: 600;
+        font-size: 1.1rem;
+        transition: all 0.3s ease;
+        border: none;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .btn-primary {
+        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+        color: white;
+        box-shadow: 0 10px 25px rgba(59, 130, 246, 0.3);
+      }
+
+      .btn-primary:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 15px 35px rgba(59, 130, 246, 0.4);
+      }
+
+      .btn-secondary {
+        background: rgba(255, 255, 255, 0.1);
+        color: white;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        backdrop-filter: blur(10px);
+      }
+
+      .btn-secondary:hover {
+        background: rgba(255, 255, 255, 0.2);
+        transform: translateY(-2px);
+      }
+
+      /* Stats */
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 30px;
+        margin: 60px 0;
+      }
+
+      .stat {
+        text-align: center;
+        padding: 30px;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(10px);
+      }
+
+      .stat-number {
+        font-size: 2.5rem;
+        font-weight: 900;
+        color: #3b82f6;
+        display: block;
+      }
+
+      .stat-label {
+        color: #9ca3af;
+        font-weight: 500;
+      }
+
+      /* Features Section */
+      .features {
+        padding: 100px 0;
+      }
+
+      .section-title {
+        text-align: center;
+        font-size: 2.5rem;
+        font-weight: 800;
+        margin-bottom: 60px;
+        color: #ffffff;
+      }
+
+      .features-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+        gap: 40px;
+        margin-top: 60px;
+      }
+
+      .feature-card {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 20px;
+        padding: 40px;
+        transition: all 0.3s ease;
+        backdrop-filter: blur(10px);
+      }
+
+      .feature-card:hover {
+        transform: translateY(-5px);
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(59, 130, 246, 0.3);
+      }
+
+      .feature-icon {
+        width: 60px;
+        height: 60px;
+        background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+        border-radius: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+        margin-bottom: 20px;
+      }
+
+      .feature-card h3 {
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin-bottom: 15px;
+        color: #ffffff;
+      }
+
+      .feature-card p {
+        color: #9ca3af;
+        line-height: 1.7;
+      }
+
+      /* Performance Section */
+      .performance {
+        padding: 100px 0;
+        background: rgba(255, 255, 255, 0.02);
+      }
+
+      .performance-content {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 60px;
+        align-items: center;
+      }
+
+      .performance-text h2 {
+        font-size: 2.5rem;
+        font-weight: 800;
+        margin-bottom: 20px;
+        color: #ffffff;
+      }
+
+      .performance-text p {
+        font-size: 1.2rem;
+        color: #9ca3af;
+        margin-bottom: 30px;
+        line-height: 1.7;
+      }
+
+      .performance-metrics {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 30px;
+      }
+
+      .metric {
+        text-align: center;
+        padding: 30px;
+        background: rgba(59, 130, 246, 0.1);
+        border-radius: 16px;
+        border: 1px solid rgba(59, 130, 246, 0.2);
+      }
+
+      .metric-value {
+        font-size: 2rem;
+        font-weight: 900;
+        color: #3b82f6;
+        display: block;
+      }
+
+      .metric-label {
+        color: #9ca3af;
+        font-size: 0.9rem;
+      }
+
+      /* Footer */
+      footer {
+        padding: 60px 0 40px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        text-align: center;
+      }
+
+      .footer-content {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 40px;
+        margin-bottom: 40px;
+      }
+
+      .footer-section h4 {
+        font-size: 1.2rem;
+        font-weight: 700;
+        margin-bottom: 20px;
+        color: #ffffff;
+      }
+
+      .footer-section a {
+        color: #9ca3af;
+        text-decoration: none;
+        display: block;
+        margin-bottom: 10px;
+        transition: color 0.3s ease;
+      }
+
+      .footer-section a:hover {
+        color: #3b82f6;
+      }
+
+      .footer-bottom {
+        padding-top: 20px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        color: #6b7280;
+      }
+
+      /* Responsive */
+      @media (max-width: 768px) {
+        .nav-links {
+          display: none;
+        }
+
+        .performance-content {
+          grid-template-columns: 1fr;
+          gap: 40px;
+        }
+
+        .cta-buttons {
+          flex-direction: column;
+          align-items: center;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="bg-animation"></div>
+
+    <header>
+      <nav class="container">
+        <a href="#" class="logo">
+          <div class="logo-icon">P</div>
+          Pod
+        </a>
+        <ul class="nav-links">
+          <li><a href="#features">Features</a></li>
+          <li><a href="#docs">Docs</a></li>
+          <li><a href="https://github.com/kabeer11000/pod">GitHub</a></li>
+          <li><a href="mailto:kabeer@otherdev.com">Contact</a></li>
+        </ul>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="container">
+          <h1>Small, Self-Hostable and Real-Time</h1>
+          <p class="subtitle">
+            High-performance, real-time database engine crafted in pure C++. Built for modern
+            applications that demand instant data synchronization.
+          </p>
+
+          <div class="cta-buttons">
+            <a href="#" class="btn btn-primary"> 🚀 Get Early Access </a>
+            <a href="#" class="btn btn-secondary"> 📖 View Documentation </a>
+          </div>
+        </div>
+      </section>
+
+      <section class="features" id="features">
+        <div class="container">
+          <h2 class="section-title">Built for Performance</h2>
+
+          <div class="features-grid">
+            <div class="feature-card">
+              <div class="feature-icon">⚡</div>
+              <h3>Custom WebSocket Engine</h3>
+              <p>
+                Built from scratch on raw TCP for maximum performance. Eliminates polling and
+                delivers instant real-time updates for chat, collaboration, and live dashboards.
+              </p>
+            </div>
+
+            <div class="feature-card">
+              <div class="feature-icon">🗄️</div>
+              <h3>Integrated Database</h3>
+              <p>
+                Custom-built database engine tightly integrated with the real-time layer. Optimized
+                storage, fine-grained control, and streamlined architecture.
+              </p>
+            </div>
+
+            <div class="feature-card">
+              <div class="feature-icon">🛡️</div>
+              <h3>CSEL Rules Engine</h3>
+              <p>
+                Sophisticated server-side rules powered by Cloud Store Expression Language. Define
+                precise validation and complex business logic with unparalleled control.
+              </p>
+            </div>
+
+            <div class="feature-card">
+              <div class="feature-icon">🔧</div>
+              <h3>Pure C++ Performance</h3>
+              <p>
+                Developed from the ground up in C++ for exceptional speed and resource efficiency.
+                Handle millions of connections with minimal overhead.
+              </p>
+            </div>
+
+            <div class="feature-card">
+              <div class="feature-icon">📈</div>
+              <h3>Auto-Scaling Architecture</h3>
+              <p>
+                Designed for horizontal scaling. Self-hosted deployment with automatic scaling
+                capabilities that grow seamlessly with your application.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="performance">
+        <div class="container">
+          <div class="performance-content">
+            <div class="performance-text">
+              <h2>Engineered for Scale</h2>
+              <p>
+                Pod isn't just another database. It's a complete real-time data platform built from
+                the ground up to handle the most demanding applications. Every component is
+                optimized for performance, scalability, and reliability.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="container">
+        <div class="footer-content">
+          <div class="footer-section">
+            <h4>Product</h4>
+            <a href="#">Features</a>
+            <a href="#">Pricing</a>
+            <a href="#">Documentation</a>
+            <a href="#">API Reference</a>
+          </div>
+
+          <div class="footer-section">
+            <h4>Resources</h4>
+            <a href="#">GitHub</a>
+            <a href="#">Examples</a>
+            <a href="#">Tutorials</a>
+            <a href="#">Community</a>
+          </div>
+
+          <div class="footer-section">
+            <h4>Company</h4>
+            <a href="#">About</a>
+            <a href="#">Blog</a>
+            <a href="#">Careers</a>
+            <a href="#">Contact</a>
+          </div>
+        </div>
+
+        <div class="footer-bottom">
+          <p>&copy; 2025 Pod Database. Built with ⚡ and pure C++.</p>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
