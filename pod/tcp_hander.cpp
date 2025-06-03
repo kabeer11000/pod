@@ -22,21 +22,24 @@ std::string sha1_hash(const std::string &input)
     SHA1(reinterpret_cast<const unsigned char *>(input.c_str()), input.length(), hash);
     return std::string(reinterpret_cast<char *>(hash), SHA_DIGEST_LENGTH);
 }
-struct WebSocketConnection {
+struct WebSocketConnection
+{
     evpp::TCPConnPtr connection;
     std::string headers;
     // Equality operator - compares the underlying connection pointers
-    bool operator==(const WebSocketConnection& other) const {
+    bool operator==(const WebSocketConnection &other) const
+    {
         return connection.get() == other.connection.get();
     }
-    
+
     // Optional: inequality operator for completeness
-    bool operator!=(const WebSocketConnection& other) const {
+    bool operator!=(const WebSocketConnection &other) const
+    {
         return !(*this == other);
     }
 };
 std::vector<WebSocketConnection> connections;
-std::string establish_websocket(const evpp::TCPConnPtr &conn, evpp::Buffer *msg)
+void establish_websocket(const evpp::TCPConnPtr &conn, evpp::Buffer *msg)
 {
     std::string headers = msg->ToString();
     std::istringstream headers_stream(headers);
@@ -83,19 +86,30 @@ std::string establish_websocket(const evpp::TCPConnPtr &conn, evpp::Buffer *msg)
 
     std::cout << "Sending WebSocket handshake response and establishing connection. " << std::endl;
     conn->Send(response_str);
-    connections.push_back((WebSocketConnection){conn, headers: response_str});
+    connections.push_back((WebSocketConnection){conn, headers : response_str});
+}
+struct WebSocketFrame
+{
+    bool fin;
+    uint8_t opcode;
+    bool masked;
+    uint64_t payload_length;
+    uint8_t mask[4];
+    std::vector<uint8_t> payload;
+};
+void on_socket_message(const WebSocketConnection &connection, evpp::Buffer *msg)
+{
+    std::cout << "Existing Connection, Recieved: " << msg->ToString() << '\n';
+    // Connection already exists.
+    std::cout << msg->ToString();
+    auto conn = connection.connection;
+    conn->Send(msg->ToString() + connection.headers);
 }
 void tcp_handler(const evpp::TCPConnPtr &conn, evpp::Buffer *msg)
 {
     auto connection = std::find(connections.begin(), connections.end(), (WebSocketConnection){conn});
     if (connection == connections.end())
-    establish_websocket(conn, msg);
-    
+        establish_websocket(conn, msg);
     else
-    {
-        std::cout << "Existing Connection, Recieved: " << msg->ToString() << '\n';
-        // Connection already exists.
-        std::cout << msg->ToString();
-        conn->Send(msg->ToString() + connection->headers);
-    }
+        on_socket_message(*connection, msg);
 }

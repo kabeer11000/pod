@@ -23,7 +23,7 @@ CXXFLAGS = -Wall -g -I$(BASE64_INCLUDE_ROOT) -I$(JSON_INCLUDE_ROOT) -I$(EVPP_INC
 LDFLAGS = -L$(BASE64_LIB_DIR) -L$(EVPP_LIB_DIR) -levpp -lglog -lgflags -levent -lpthread  -lssl -lcrypto
 
 # Target executable
-TARGET = main
+TARGET = pod/build/bin/pod
 
 # For deleting the target and object files
 TARGET_DEL = $(TARGET) $(OBJS)
