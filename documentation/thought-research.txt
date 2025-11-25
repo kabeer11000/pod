@@ -1,0 +1,132 @@
+This is the critical architectural hurdle. You are mashing together two conflicting concepts:
+
+WebSockets: Long-lived, stateful connections (Client is pinned to Server A).
+
+RocksDB Sharding: Data locality (Data for "User X" is physically on Server B).
+
+If a client connects to Server A (via the Load Balancer), but wants data that lives inside Server B's RocksDB instance, Server A cannot help them directly.
+
+Here is the architecture you need to implement to solve this "Gateway vs. Storage" problem.
+
+The Architecture: "Smart Gateway, Sharded Storage"
+You cannot simply "load balance" requests because RocksDB is local. Instead, you load balance the connections, and then internally route the requests.
+
+Every C++ node in your cluster will act in two roles simultaneously:
+
+Gateway Role: Accepts WebSocket connections from clients.
+
+Storage Role: Manages a shard of the RocksDB data (e.g., Keys A-M).
+
+Step 1: The Load Balancer (Layer 4 or 7)
+Goal: Distribute distinct connections evenly, not requests.
+
+Use Nginx or HAProxy.
+
+Strategy: least_conn.
+
+Behavior: Client connects. LB sees Node 1 has 500 users and Node 2 has 200. It sends the client to Node 2.
+
+Problem: Node 2 might not have the data the client wants. The client asks for doc_id: "user_a", but "user_a" lives on Node 1.
+
+Step 2: The "Request Router" (Internal gRPC/Socket)
+Since Node 2 holds the client's WebSocket, but Node 1 holds the RocksDB data, Node 2 acts as an Internal Proxy.
+
+You need an internal mapping (The "Partition Map") shared by all nodes.
+
+The Flow:
+
+Client sends subscribe("users/alice") to Node 2 (Gateway).
+
+Node 2 calculates hash("users/alice").
+
+Result: This key belongs to Partition 1.
+
+Lookup: Partition 1 lives on Node 1.
+
+Node 2 forwards the request to Node 1 (via internal high-speed gRPC or raw TCP).
+
+Node 1 (Storage) sets up the RocksDB iterator/watcher.
+
+Node 1 detects a change in users/alice.
+
+Node 1 sends the data back to Node 2.
+
+Node 2 pushes it down the WebSocket to the Client.
+
+Step 3: Handling Resume Tokens
+Since you mentioned Resume Tokens (great move!), this simplifies your load balancer configuration significantly.
+
+Scenario:
+
+Client was connected to Node A. They were listening to a query.
+
+Node A crashes.
+
+Client reconnects. Load Balancer sends them to Node B.
+
+Client sends: ResumeToken: <timestamp_checksum> with their listen request.
+
+Node B (via the Internal Router) forwards this to the data owner (let's say Node C).
+
+Node C uses the token to seek RocksDB: "Give me all changes after this token."
+
+Node C returns the delta. Node B forwards to Client.
+
+Result: The client doesn't care which server they are physically connected to. The Resume Token abstracts the state.
+
+C++ Implementation Logic (The "Smart Peer")
+Here is how you implement the "Internal Router" logic in your uWebSockets server.
+
+C++
+
+// Map of partitions to internal node IPs
+// In production, this comes from your Coordination Server (etcd/Zookeeper)
+std::map<int, std::string> partitionMap = {
+    {0, "10.0.0.1:5000"}, // Node A handles Hash 0-50
+    {1, "10.0.0.2:5000"}  // Node B handles Hash 51-100
+};
+
+// 1. Client sends a request to THIS node
+void onClientRequest(WebSocket *ws, Request req) {
+    int partition = calculateHash(req.docId) % TOTAL_PARTITIONS;
+    std::string ownerNode = partitionMap[partition];
+
+    // Case A: I own the data (I am the storage node)
+    if (ownerNode == MY_IP_ADDRESS) {
+        std::string data = rocksDB_Get(req.docId);
+        ws->send(data);
+    } 
+    // Case B: Someone else owns it (I am just the Gateway)
+    else {
+        // Forward request internally
+        forwardToNode(ownerNode, req, [ws](std::string response) {
+            // When internal node replies, forward to client
+            ws->send(response);
+        });
+    }
+}
+Step 4: The "Watch" Problem (Distributed Listeners)
+If Node 2 is watching data on Node 1, Node 1 needs to know who to notify when data changes.
+
+Do not maintain individual client sockets in the internal link. Group them.
+
+Node 2 has 500 clients watching chat/general (which lives on Node 1).
+
+Node 2 sends ONE internal subscription to Node 1: "I (Node 2) am interested in chat/general."
+
+Node 1 (Storage) sees a write to chat/general.
+
+Node 1 sends the update to Node 2.
+
+Node 2 (Gateway) broadcasts that update to the 500 local clients waiting for it.
+
+Summary of Responsibilities
+Component	Responsibility
+Load Balancer (Nginx)	Balances TCP Connections. Ensures no single C++ node runs out of file descriptors/RAM.
+Gateway Logic (C++)	Holds the WebSocket. Looks up the "Partition Map". Forwards request to the correct Storage Node.
+Storage Logic (C++)	Holds the RocksDB pointer. Executes Reads/Writes. Notifies Gateways of changes.
+Internal Network	gRPC or ZeroMQ. Connects all C++ nodes into a mesh.
+
+Export to Sheets
+
+Would you like me to diagram the specific packet flow for a "Write" operation when the Client is connected to the wrong node?
