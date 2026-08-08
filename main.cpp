@@ -7,10 +7,22 @@
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
+auto msgPackResponder(auto &ws, auto &response) {
+  if (response.has_value()) {
+    auto packed = json::to_msgpack(response.value());
+    std::string_view payload(reinterpret_cast<const char *>(packed.data()),
+                             packed.size());
+    ws->send(payload, uWS::OpCode::BINARY);
+  } else {
+    auto packed = json::to_msgpack(response.error());
+    std::string_view payload(reinterpret_cast<const char *>(packed.data()),
+                             packed.size());
+    ws->send(payload, uWS::OpCode::BINARY);
+  }
+};
 int main() {
   auto db_instance = getLevelDBInstance();
   uWS::App app = uWS::App();
-
   auto welcomeHandler = [](auto *res, auto *req) {
     res->end("Welcome to Pod DB!");
   };
@@ -25,18 +37,17 @@ int main() {
         if (action == "insert") {
           InsertRequest parsed = parsed_message;
           auto response = insert_handler(parsed);
-          response.has_value()
-              ? ws->send(json(response.value()).dump(), opCode)
-              : ws->send(json(response.error()).dump(), opCode);
+          msgPackResponder(ws, response);
         } else if (action == "get") {
           GetRequest parsed = parsed_message;
           auto response = get_handler(parsed);
-          response.has_value()
-              ? ws->send(json(response.value()).dump(), opCode)
-              : ws->send(json(response.error()).dump(), opCode);
+          msgPackResponder(ws, response);
         } else {
           PodHandlerError err{.reason = "Unknown action: " + action};
-          ws->send(json(err).dump(), opCode);
+          auto packed = json::to_msgpack(err);
+          std::string_view payload(reinterpret_cast<const char *>(packed.data()),
+                                   packed.size());
+          ws->send(payload, uWS::OpCode::BINARY);
         }
       }});
   app.listen(3000, [](auto *listen_socket) {

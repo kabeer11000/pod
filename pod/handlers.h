@@ -13,7 +13,7 @@ struct PodRequestGeneric {
     std::string action;
 };
 // You must define a macro for nested structs too!
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PodRequestGeneric, request_id)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PodRequestGeneric, request_id, action)
 
 struct PodResponseGeneric {
     std::string request_id;
@@ -58,7 +58,7 @@ struct GetResponse {
     std::string path;
     nlohmann::json data;
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetResponse, meta, error, status, path)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetResponse, meta, error, status, path, data)
 
 // ============================================================================
 // FUNCTION DECLARATIONS (Signatures only)
