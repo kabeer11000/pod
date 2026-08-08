@@ -1,32 +1,17 @@
 #include "../routines/leveldb/interface.h"
-#include "iostream"
+#include <expected>
+#include "sstream"
 #include "string"
+#include <boost/uuid/time_generator_v7.hpp>
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_io.hpp>
 #include <expected>
 #include <leveldb/options.h>
 #include <nlohmann/json.hpp>
 #include <vector>
-#include "vector"
-#include "sstream"
-#include <boost/uuid/uuid.hpp>
-#include <boost/uuid/time_generator_v7.hpp> // Specific header for v7
-#include <boost/uuid/uuid_io.hpp>             // Streaming/string serialization
+#include "./handlers.h"
 
 using json = nlohmann::json;
-// Pod handlers follow a generic type
-// They return a std::expected wrapped type which resolves to an error or
-// nothing
-struct PodRequestGeneric {
-  std::string request_id;
-};
-struct PodHandlerError {
-  std::string reason;
-};
-struct InsertRequest {
-  PodRequestGeneric meta;
-  std::string path;
-  json document_data;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(InsertRequest, meta, path, document_data);
 std::vector<std::string> splitPath(const std::string &path) {
   std::vector<std::string> segments;
   std::stringstream ss(path);
@@ -38,18 +23,55 @@ std::vector<std::string> splitPath(const std::string &path) {
   }
   return segments;
 }
+std::string joinPath(const std::vector<std::string> &segments) {
+  int total_size = 0;
+  for (const auto &segment : segments)
+    total_size += segment.size() + 1; // Acconting for "/" in between
 
-struct InsertionResponse {};
-
-std::expected<InsertionResponse, PodHandlerError> insert_handler(json &packet) {
-  const auto db = getDatabaseInstance();
-  std::vector<std::string> path = splitPath(packet["path"]);
-  // This validates if a path is correct or not.
-  // ['users', 'user'] means user is an ID (document) since array is even. if ['users', 'user', 'music'] was the path,
-  // this means users is a collection, user is a single document and music is a collection inside user hence we will
-  // need to append data to end of the path to facilitate insertion
-  if (path.size() % 2 == 0) {
-      path.push_back()
+  std::string path;
+  // Single static heap allocation
+  path.reserve(total_size);
+  for (size_t i = 0; i < segments.size(); ++i) {
+    path += segments[i];
+    if (i < segments.size() - 1)
+      path += '/';
   }
-  db->Put(leveldb::WriteOptions(), path, const Slice &value)
+  return path;
+}
+std::expected<InsertResponse, PodHandlerError>
+insert_handler(InsertRequest &packet) {
+  const auto db = getDatabaseInstance();
+  std::vector<std::string> path = splitPath(packet.path);
+  // This validates if a path is correct or not.
+  // ['users', 'user'] means user is an ID (document) since array is even. if
+  // ['users', 'user', 'music'] was the path, this means users is a collection,
+  // user is a single document and music is a collection inside user hence we
+  // will need to append data to end of the path to facilitate insertion
+  if (path.size() % 2 == 0) {
+    boost::uuids::time_generator_v7 gen;
+    // Generate the UUID
+    boost::uuids::uuid uuid = gen();
+    // This is a heap allocation on to_string can be optimized but I am not that
+    // smart with C++ as of now
+    path.push_back(boost::uuids::to_string(uuid));
+  }
+  // Were saving text based documents in MessagePack binary format
+  std::vector<uint8_t> binary_data = json::to_msgpack(packet.document_data);
+  leveldb::Slice leveldb_slice(
+      reinterpret_cast<const char *>(binary_data.data()), binary_data.size());
+  const auto write_path = joinPath(path);
+  const auto db_status = db->Put(leveldb::WriteOptions(), write_path, leveldb_slice);
+  if (!db_status.ok()) {
+        PodHandlerError err;
+        err.reason = "Database write failed: " + db_status.ToString();
+        // std::unexpected routes this to the error channel of std::expected
+        return std::unexpected(err);
+    }
+  InsertResponse response = {
+        .meta = packet.meta,  // Echo back the request metadata (important for the client!)
+        .error = 0,           // 0 means no error
+        .status = 200,        // HTTP-style success code
+        .path = write_path    // Tell the client exactly where it was saved
+    };
+  return response;
 };

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(MyRealtimeDB CXX)
+project(Pod CXX)
 
 # Tell CMake to generate compile_commands.json
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -13,8 +13,12 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(unofficial-uwebsockets CONFIG REQUIRED) # Updated line
 find_package(Boost REQUIRED COMPONENTS headers)
 
+file(GLOB_RECURSE PROJECT_SOURCES CONFIGURE_DEPENDS
+    "main.cpp"
+    "./*.cpp"
+)
 # Create your main executable
-add_executable(pod main.cpp)
+add_executable(pod ${PROJECT_SOURCES})
 
 # Link the libraries to your executable
 target_link_libraries(pod PRIVATE
