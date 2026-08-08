@@ -1,5 +1,5 @@
+#include "./handlers.h"
 #include "../routines/leveldb/interface.h"
-#include <expected>
 #include "sstream"
 #include "string"
 #include <boost/uuid/time_generator_v7.hpp>
@@ -8,8 +8,8 @@
 #include <expected>
 #include <leveldb/options.h>
 #include <nlohmann/json.hpp>
+#include <string>
 #include <vector>
-#include "./handlers.h"
 
 using json = nlohmann::json;
 std::vector<std::string> splitPath(const std::string &path) {
@@ -38,9 +38,10 @@ std::string joinPath(const std::vector<std::string> &segments) {
   }
   return path;
 }
+// Insert handler
 std::expected<InsertResponse, PodHandlerError>
 insert_handler(InsertRequest &packet) {
-  const auto db = getDatabaseInstance();
+  const auto db = getLevelDBInstance();
   std::vector<std::string> path = splitPath(packet.path);
   // This validates if a path is correct or not.
   // ['users', 'user'] means user is an ID (document) since array is even. if
@@ -60,18 +61,54 @@ insert_handler(InsertRequest &packet) {
   leveldb::Slice leveldb_slice(
       reinterpret_cast<const char *>(binary_data.data()), binary_data.size());
   const auto write_path = joinPath(path);
-  const auto db_status = db->Put(leveldb::WriteOptions(), write_path, leveldb_slice);
+  const auto db_status =
+      db->Put(leveldb::WriteOptions(), write_path, leveldb_slice);
   if (!db_status.ok()) {
-        PodHandlerError err;
-        err.reason = "Database write failed: " + db_status.ToString();
-        // std::unexpected routes this to the error channel of std::expected
-        return std::unexpected(err);
-    }
+    PodHandlerError err;
+    err.reason = "Database write failed: " + db_status.ToString();
+    // std::unexpected routes this to the error channel of std::expected
+    return std::unexpected(err);
+  }
   InsertResponse response = {
-        .meta = packet.meta,  // Echo back the request metadata (important for the client!)
-        .error = 0,           // 0 means no error
-        .status = 200,        // HTTP-style success code
-        .path = write_path    // Tell the client exactly where it was saved
-    };
+      .meta = {.request_id = packet.meta.request_id,
+               .action = "insert-ack"}, // Echo back the request metadata
+                                        // (important for the client!)
+      .error = 0,                       // 0 means no error
+      .status = 200,                    // HTTP-style success code
+      .path = write_path // Tell the client exactly where it was saved
+  };
+  return response;
+};
+
+// Get handler
+std::expected<GetResponse, PodHandlerError> get_handler(GetRequest &packet) {
+  const auto db = getLevelDBInstance();
+  std::vector<std::string> path = splitPath(packet.path);
+  // This validates if a path is correct or not.
+  // ['users', 'user'] means user is an ID (document) since array is even. if
+  // ['users', 'user', 'music'] was the path, this means users is a collection,
+  // user is a single document and music is a collection inside user hence we
+  // will need to append data to end of the path to facilitate insertion
+  if (path.size() % 2 == 0) { /* Collection Query */
+  }
+  // Were saving text based documents in MessagePack binary format
+  const auto write_path = joinPath(path);
+  std::string value;
+  const auto db_status = db->Get(leveldb::ReadOptions(), write_path, &value);
+  auto data = json::from_msgpack(value);
+  if (!db_status.ok()) {
+    PodHandlerError err;
+    err.reason = "Database read failed: " + db_status.ToString();
+    // std::unexpected routes this to the error channel of std::expected
+    return std::unexpected(err);
+  }
+  GetResponse response = {
+      .meta = {.request_id = packet.meta.request_id,
+               .action = "get-ack"}, // Echo back the request metadata
+                                     // (important for the client!)
+      .error = 0,                    // 0 means no error
+      .status = 200,                 // HTTP-style success code
+      .path = write_path, // Tell the client exactly where it was saved
+      .data = data};
   return response;
 };

@@ -28,6 +28,7 @@ struct PodHandlerError {
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PodHandlerError, reason)
 
+// Insert Handler types
 struct InsertRequest {
     PodRequestGeneric meta;
     std::string path;
@@ -43,6 +44,22 @@ struct InsertResponse {
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(InsertResponse, meta, error, status, path)
 
+// Get Handler types
+struct GetRequest {
+    PodRequestGeneric meta;
+    std::string path;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetRequest, meta, path)
+
+struct GetResponse {
+    PodRequestGeneric meta;
+    int error;
+    int status;
+    std::string path;
+    nlohmann::json data;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetResponse, meta, error, status, path)
+
 // ============================================================================
 // FUNCTION DECLARATIONS (Signatures only)
 // ============================================================================
@@ -52,3 +69,4 @@ std::vector<std::string> splitPath(const std::string &path);
 std::string joinPath(const std::vector<std::string> &segments);
 
 std::expected<InsertResponse, PodHandlerError> insert_handler(InsertRequest &packet);
+std::expected<GetResponse, PodHandlerError> get_handler(GetRequest &packet);

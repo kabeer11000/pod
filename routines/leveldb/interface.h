@@ -3,4 +3,4 @@
 #include <leveldb/status.h>
 #include <optional>
 
-leveldb::DB* getDatabaseInstance(std::optional<std::string> database_file = std::nullopt);
+leveldb::DB* getLevelDBInstance(std::optional<std::string> database_file = std::nullopt);
