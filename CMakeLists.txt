@@ -5,7 +5,7 @@ project(Pod CXX)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Require C++20 for modern features
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 
 # Find the packages you just added
 find_package(leveldb CONFIG REQUIRED)
@@ -13,9 +13,10 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(unofficial-uwebsockets CONFIG REQUIRED) # Updated line
 find_package(Boost REQUIRED COMPONENTS headers)
 
-file(GLOB_RECURSE PROJECT_SOURCES CONFIGURE_DEPENDS
+file(GLOB PROJECT_SOURCES CONFIGURE_DEPENDS
     "main.cpp"
-    "./*.cpp"
+    "pod/*.cpp"
+    "routines/*/*.cpp"
 )
 # Create your main executable
 add_executable(pod ${PROJECT_SOURCES})
