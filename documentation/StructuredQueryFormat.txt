@@ -1,0 +1,85 @@
+Query Format
+Cloudstore employs a strictly typed, JSON-based declarative syntax. This format dissociates the query logic from the transport layer, ensuring consistent behavior across WebSocket and REST interfaces.
+The structure is composed of source selection (from), composite filtering (where), and result set constraints (orderBy, limit).
+Structure: StructuredQuery
+{
+    "from": <CollectionPath>,
+    "where": [
+       {
+         "field": <FieldPath>,
+         "op": <Enum: FilterOperations>,
+         "value": <Any>
+       },
+       ...
+    ],
+    "orderBy": {
+       "field": <string>,
+       "direction": "ASCENDING" | "DESCENDING"
+    },
+    "limit": <integer | null>
+    "project": [FieldPath, ...], # Fields you want to project
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Field Definitions
+Directive
+Description
+
+
+from
+Defines the data source context. Currently accepts a collection & database property. Note: Schema is extensible for future sources (e.g., Aggregations).
+Depecrated
+
+project
+An array of property paths, Supports standard dot-notation for nested objects (e.g., user.emails or meta.created_at). This field is used to perform a projection, if left empty / uncalled all fields of an object are selected.
+New
+
+where
+An array of FilterObjects. Multiple filters are logically combined using AND.
+
+
+where.field
+The target property path. Supports standard dot-notation for nested objects (e.g., user.emails or meta.created_at).
+
+
+where.op
+The comparison operator. Valid values: EQUAL, GREATER, LESSER, GREATER_EQUAL, LESSER_EQUAL, ARRAY.IN, ARRAY.NOT_IN, ARRAY.EQUALS, ARRAY.ELEMENT_AT.
+
+
+where.value
+The subject of comparison. Accepts scalar values (string, number, boolean) as well as complex Objects/Arrays for structural matching.
+
+
+orderBy
+Optional. Specifies the sort order using a target field and direction.
+
+
+limit
+Optional. Integers constrain the result set size; null implies unbounded results.
+
+
+
+
+Reference Implementation: For full interface definitions and usage examples, refer to the Cloudstore Query Language section in the client documentation.

@@ -5,3 +5,20 @@ Works across multiple channels (Web, and Raw TCP).
 
 Regards,
 Kabeer Jaffri
+
+
+===============================================================================
+
+Roadmap:
+
+- Create working database which is real-time fetchable via Websockets
+- Add custom indexing via key-scoping e.g. id_author = value
+- Add snapshotting and delta resolution - 1st Client release
+- Add CEL and rules-engine
+
+
+===============================================================================
+
+Running:
+
+watchexec -e cpp,h -r -- "cmake --build build && ./build/pod"

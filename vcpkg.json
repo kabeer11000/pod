@@ -2,6 +2,7 @@
   "dependencies": [
     "leveldb",
     "nlohmann-json",
-    "uwebsockets"
+    "uwebsockets",
+    "boost-uuid"
   ]
 }
