@@ -1,7 +1,5 @@
-#include "./pod/handlers.h"
-#include "./pod/interface.h"
-#include "./routines/leveldb/interface.h"
-#include "expected"
+#include "network/ws/handlers.h"
+#include "network/ws/task_queue.h"
 #include "uwebsockets/App.h"
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -20,8 +18,9 @@ auto msgPackResponder(auto &ws, auto &response) {
     ws->send(payload, uWS::OpCode::BINARY);
   }
 };
-int main() {
-  auto db_instance = getLevelDBInstance();
+
+auto db_instance = getLevelDBInstance();
+int start_pods_standalone() {
   uWS::App app = uWS::App();
   auto welcomeHandler = [](auto *res, auto *req) {
     res->end("Welcome to Pod DB!");

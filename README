@@ -22,4 +22,9 @@ Roadmap:
 
 Running:
 
+Build requires vcpkg configured and $VCPKG_ROOT configured
+cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE="/home/k0x/vcpkg/scripts/buildsystems/vcpkg.cmake"
+or ofcourse use VCPKG_ROOT.
+
+and then:
 watchexec -e cpp,h -r -- "cmake --build build && ./build/pod"
