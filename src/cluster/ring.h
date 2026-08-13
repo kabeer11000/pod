@@ -1,9 +1,12 @@
 #include "storage/driver_leveldb.h"
+#include "storage/interface.h"
 #include "storage/types.h"
 #include "string"
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <string>
+#include <sys/types.h>
 #include <vector>
 
 uint32_t hash(std::string &data) {
@@ -21,12 +24,11 @@ uint32_t hash(std::string &data) {
 }
 class Ring {
 private:
-  std::vector<uint32_t> virtual_nodes(1);
-
-public:
-  ~Ring() {
-    LevelDBStorageDriver d("./pod-internal-locals");
-    auto [status, v] = d.Get("_sys/cluster/virtual_nodes");
+  std::vector<uint32_t> virtual_nodes;
+  StorageDriver &_d;
+  int splits = 2000;
+  void load_ring_from_storage() {
+    auto [status, v] = _d.Get("_sys/cluster/virtual_nodes");
     if (!status.is_ok) {
       std::cout << "[warn][cluster/ring]: Could not find existing "
                    "virtual_nodes, creating an empty ring";
@@ -38,12 +40,25 @@ public:
                    "virtual_nodes, creating an empty ring";
       return;
     }
-    v.
+    virtual_nodes.resize(v.size() / sizeof(uint32_t));
+    memcpy(virtual_nodes.data(), v.data(), v.size());
+  }
+  void save_ring_to_storage() {
+    ByteView bytes(reinterpret_cast<const uint8_t *>(virtual_nodes.data()),
+                   virtual_nodes.size() * sizeof(uint32_t));
+    _d.Put("_sys/cluster/virtual_nodes", bytes);
+  }
+
+public:
+  Ring(StorageDriver &d) : _d(d) {
+    std::cout << "[log][cluster/ring]: Ring object is being initialised";
+    load_ring_from_storage();
   };
-  std::vector<uint32_t> add_server(std::string &node_id) {
+  ~Ring() { save_ring_to_storage(); };
+  // To-do add a RemoveNode method
+  std::vector<uint32_t> AddNode(std::string &node_id) {
     // Creates virtual positions for a given node_id,
     // These reduce burden on a single node and make ring more uniform
-    int splits = 2000;
     std::vector<uint32_t> virtual_nodes;
     for (int i = 0; i < splits; i++) {
       // if node_id = 1; {1_1, 1_2, 1_3 ... 1_1999}
