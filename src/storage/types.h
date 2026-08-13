@@ -14,6 +14,6 @@ struct DBStatus {
     std::string message;
 
     static DBStatus Ok() { return {true, false, ""}; }
-    static DBStatus NotFound() { return {false, true, "Key not found"}; }
+    static DBStatus NotFound() { return {true, true, "Key not found"}; }
     static DBStatus Error(const std::string& msg) { return {false, false, msg}; }
 };

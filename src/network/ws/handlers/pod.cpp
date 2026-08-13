@@ -1,3 +1,4 @@
+#include "common/log.h"
 #include "network/ws/handlers/interface.h"
 #include "sstream"
 #include "storage/interface.h"
@@ -54,17 +55,34 @@ insert_handler(StorageDriver &d, InsertRequest &packet) {
     // This is a heap allocation on to_string can be optimized but I am not that
     // smart with C++ as of now
     path.push_back(boost::uuids::to_string(uuid));
+    Log(LogLevel::Info, "pod/insert_handler",
+        "Recieved `path` for a collection instead of a document. DocumentId(" +
+            boost::uuids::to_string(uuid) + ")");
   }
+  Log(LogLevel::Info, "pod/insert_handler",
+      "Recieved `path` for a document. Attempting to save MessagePack "
+      "contents");
+
   // Were saving text based documents in MessagePack binary format
   std::vector<uint8_t> binary_data = json::to_msgpack(packet.document_data);
+  Log(LogLevel::Info, "pod/insert_handler",
+      "Successfully converted content to MessagePack buffer");
+
   const auto write_path = joinPath(path);
+  Log(LogLevel::Info, "pod/insert_handler",
+      "Joining path to get final writePath (" + write_path + ")");
   const auto db_status = d.Put(write_path, binary_data);
   if (!db_status.is_ok) {
     PodHandlerError err;
     err.reason = "Database write failed: " + db_status.message;
+    Log(LogLevel::Error, "pod/insert_handler",
+        "Database write failed: " + db_status.message);
     // std::unexpected routes this to the error channel of std::expected
     return std::unexpected(err);
   }
+  Log(LogLevel::Info, "pod/insert_handler",
+      "Successfully saved document in database");
+
   InsertResponse response = {
       .meta = {.request_id = packet.meta.request_id,
                .action = "insert-ack"}, // Echo back the request metadata
@@ -73,6 +91,8 @@ insert_handler(StorageDriver &d, InsertRequest &packet) {
       .status = 200,                    // HTTP-style success code
       .path = write_path // Tell the client exactly where it was saved
   };
+  Log(LogLevel::Info, "pod/insert_handler",
+      "Returning InsertResponse with insert-ack");
   return response;
 };
 
@@ -87,25 +107,36 @@ std::expected<GetResponse, PodHandlerError> get_handler(StorageDriver &d,
   // will need to append data to end of the path to facilitate insertion
 
   if (path.size() % 2 == 0) { /* Collection Query */
-      // This requires iterators and seeking to solve
+                              // This requires iterators and seeking to solve
   }
   // Were saving text based documents in MessagePack binary format
-  const auto write_path = joinPath(path);
-  const auto [db_status, value] = d.Get(write_path);
-  auto data = json::from_msgpack(value);
+  const auto read_path = joinPath(path);
+  const auto [db_status, value] = d.Get(read_path);
   if (!db_status.is_ok) {
     PodHandlerError err;
     err.reason = "Database read failed: " + db_status.message;
     // std::unexpected routes this to the error channel of std::expected
     return std::unexpected(err);
   }
+  if (db_status.is_not_found) {
+    GetResponse response = {
+        .meta = {.request_id = packet.meta.request_id,
+                 .action = "get-ack"}, // Echo back the request metadata
+                                       // (important for the client!)
+        .error = 1,                    // 0 means no error
+        .status = db_status.is_not_found ? 404 : 200, // HTTP-style success code
+        .path = read_path, // Tell the client exactly where it was saved
+    };
+    return response;
+  }
+  auto data = json::from_msgpack(value);
   GetResponse response = {
       .meta = {.request_id = packet.meta.request_id,
                .action = "get-ack"}, // Echo back the request metadata
                                      // (important for the client!)
       .error = 0,                    // 0 means no error
       .status = 200,                 // HTTP-style success code
-      .path = write_path, // Tell the client exactly where it was saved
+      .path = read_path, // Tell the client exactly where it was saved
       .data = data};
   return response;
 };

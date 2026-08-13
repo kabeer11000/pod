@@ -3,8 +3,8 @@
 #include "entry/interface.h"
 
 int main() {
-  std::cout << "Starting Pod [" << std::endl;
+  std::cout << "Starting Pod..." << std::endl;
   LevelDBStorageDriver d("./pod-storage");
-  entry(d);
+  entry_standalone(d);
   return 0;
 }

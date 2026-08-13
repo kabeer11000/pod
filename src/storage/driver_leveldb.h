@@ -1,4 +1,7 @@
+#pragma once
 #include "storage/interface.h"
+#include "string"
+
 namespace leveldb {
 class DB;
 }
@@ -6,7 +9,7 @@ class DB;
 class LevelDBStorageDriver : public StorageDriver {
 public:
   LevelDBStorageDriver(
-      std::string_view db_path); // you'll want this too, see #3
+      const std::string db_path); // you'll want this too, see #3
   ~LevelDBStorageDriver() override;
 
   DBStatus Put(std::string_view key, ByteView value) override;

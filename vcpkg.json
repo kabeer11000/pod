@@ -4,5 +4,6 @@
     "nlohmann-json",
     "uwebsockets",
     "boost-uuid"
+    "cel"
   ]
 }

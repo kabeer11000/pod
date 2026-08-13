@@ -1,6 +1,6 @@
 #include "common/thread_pool.h"
+#include "common/log.h"
 #include "common/task_queue.h"
-#include <iostream>
 #include <vector>
 
 ThreadPool::ThreadPool(TaskQueue &tq, int thread_count) : _tq(tq) {
@@ -10,7 +10,7 @@ ThreadPool::ThreadPool(TaskQueue &tq, int thread_count) : _tq(tq) {
 void ThreadPool::Run() {
   Task t;
   while (_tq.pop(t)) {
-    std::cout << "[log][thread_pool]: Processing Task (" << t.id << ")";
+    Log(LogLevel::Info, "ThreadPool", "Processing Task (" + t.id + ")");
     t.closure();
   }
 };

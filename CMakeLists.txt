@@ -16,6 +16,7 @@ find_package(Boost REQUIRED COMPONENTS headers)
 # Automatically find ALL .cpp files inside the src/ directory and its subfolders
 file(GLOB_RECURSE PROJECT_SOURCES CONFIGURE_DEPENDS
     "src/*.cpp"
+    "src/*.h"
 )
 
 # Create your main executable
