@@ -1,6 +1,10 @@
 #include <iostream>
+#include "storage/driver_leveldb.h"
+#include "entry/interface.h"
 
 int main() {
-  std::cout << "Ready Main.cpp" << std::endl;
+  std::cout << "Starting Pod [" << std::endl;
+  LevelDBStorageDriver d("./pod-storage");
+  entry(d);
   return 0;
 }

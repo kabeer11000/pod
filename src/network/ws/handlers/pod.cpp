@@ -1,6 +1,6 @@
-#include "./handlers.h"
-#include "../routines/leveldb/interface.h"
+#include "network/ws/handlers/interface.h"
 #include "sstream"
+#include "storage/interface.h"
 #include "string"
 #include <boost/uuid/time_generator_v7.hpp>
 #include <boost/uuid/uuid.hpp>
@@ -40,8 +40,7 @@ std::string joinPath(const std::vector<std::string> &segments) {
 }
 // Insert handler
 std::expected<InsertResponse, PodHandlerError>
-insert_handler(InsertRequest &packet) {
-  const auto db = getLevelDBInstance();
+insert_handler(StorageDriver &d, InsertRequest &packet) {
   std::vector<std::string> path = splitPath(packet.path);
   // This validates if a path is correct or not.
   // ['users', 'user'] means user is an ID (document) since array is even. if
@@ -58,14 +57,11 @@ insert_handler(InsertRequest &packet) {
   }
   // Were saving text based documents in MessagePack binary format
   std::vector<uint8_t> binary_data = json::to_msgpack(packet.document_data);
-  leveldb::Slice leveldb_slice(
-      reinterpret_cast<const char *>(binary_data.data()), binary_data.size());
   const auto write_path = joinPath(path);
-  const auto db_status =
-      db->Put(leveldb::WriteOptions(), write_path, leveldb_slice);
-  if (!db_status.ok()) {
+  const auto db_status = d.Put(write_path, binary_data);
+  if (!db_status.is_ok) {
     PodHandlerError err;
-    err.reason = "Database write failed: " + db_status.ToString();
+    err.reason = "Database write failed: " + db_status.message;
     // std::unexpected routes this to the error channel of std::expected
     return std::unexpected(err);
   }
@@ -81,24 +77,25 @@ insert_handler(InsertRequest &packet) {
 };
 
 // Get handler
-std::expected<GetResponse, PodHandlerError> get_handler(GetRequest &packet) {
-  const auto db = getLevelDBInstance();
+std::expected<GetResponse, PodHandlerError> get_handler(StorageDriver &d,
+                                                        GetRequest &packet) {
   std::vector<std::string> path = splitPath(packet.path);
   // This validates if a path is correct or not.
   // ['users', 'user'] means user is an ID (document) since array is even. if
   // ['users', 'user', 'music'] was the path, this means users is a collection,
   // user is a single document and music is a collection inside user hence we
   // will need to append data to end of the path to facilitate insertion
+
   if (path.size() % 2 == 0) { /* Collection Query */
+      // This requires iterators and seeking to solve
   }
   // Were saving text based documents in MessagePack binary format
   const auto write_path = joinPath(path);
-  std::string value;
-  const auto db_status = db->Get(leveldb::ReadOptions(), write_path, &value);
+  const auto [db_status, value] = d.Get(write_path);
   auto data = json::from_msgpack(value);
-  if (!db_status.ok()) {
+  if (!db_status.is_ok) {
     PodHandlerError err;
-    err.reason = "Database read failed: " + db_status.ToString();
+    err.reason = "Database read failed: " + db_status.message;
     // std::unexpected routes this to the error channel of std::expected
     return std::unexpected(err);
   }

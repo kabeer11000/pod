@@ -1,4 +1,5 @@
 #pragma once
+#include "storage/interface.h"
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -68,5 +69,5 @@ std::vector<std::string> splitPath(const std::string &path);
 
 std::string joinPath(const std::vector<std::string> &segments);
 
-std::expected<InsertResponse, PodHandlerError> insert_handler(InsertRequest &packet);
-std::expected<GetResponse, PodHandlerError> get_handler(GetRequest &packet);
+std::expected<InsertResponse, PodHandlerError> insert_handler(StorageDriver& d, InsertRequest &packet);
+std::expected<GetResponse, PodHandlerError> get_handler(StorageDriver& d, GetRequest &packet);

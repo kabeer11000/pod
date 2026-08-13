@@ -3,18 +3,11 @@
 // We will do this via two different thread pools
 //
 // Tasks define a structure which takes context data and a closure which runs when a worker executes that task
-#include <chrono>
+#pragma once
 #include <condition_variable>
-#include <functional>
 #include <mutex>
 #include <queue>
-#include "string"
-
-struct Task {
-    std::function<void()> closure;
-    std::string id;
-    std::chrono::steady_clock::time_point enqueued_at;
-};
+#include "common/task.h"
 // Thread sleeps if mutex isn't available.
 // Thread sleeps if mutex aquired and condition is not valid (array is empty).
 class TaskQueue {
@@ -33,5 +26,5 @@ class TaskQueue {
     public:
         TaskQueue() = default;
         void push(Task t);
-        void pop(Task& t);
+        bool pop(Task& t);
 };

@@ -19,7 +19,7 @@ void TaskQueue::push(Task t) {
     // Notify a thread sleeping on pop that new data is available
     _cv.notify_one();
 }
-void TaskQueue::pop(Task& t) {
+bool TaskQueue::pop(Task& t) {
     // Is lock currently available if so aquire
     std::unique_lock<std::mutex> lock(_mu);
     _cv.wait(lock, [&] {
@@ -27,5 +27,6 @@ void TaskQueue::pop(Task& t) {
     });
     t = std::move(_queue.front());
     _queue.pop(); // Pops front value
+    return true;
     // Since we're using std::unique_lock mutex is automatically released when this function's scope ends (Destructor)
 }
