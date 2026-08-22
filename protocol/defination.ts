@@ -136,7 +136,7 @@ export interface IMutateManyRequest {
       op: IFilterOperations;
       value: any;
     }[];
-    delete?: string[]; // Field paths to strip across matched docs
+    remove?: string[]; // Field paths to strip across matched docs
     set?: Record<string, any>; // Field updates to merge across matched docs
   };
 }
