@@ -150,7 +150,7 @@ export class PodReference {
                     this._pending_events.delete(request_id);
                     reject(new Error(`Pod: request ${request_id} timed out`));
                 }
-            }, 10_000);
+            }, 100_000);
         });
     }
 }

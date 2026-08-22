@@ -1,3 +1,4 @@
+//@ts-nocheck
 /**
  * uuidv7: A JavaScript implementation of UUID version 7
  *
