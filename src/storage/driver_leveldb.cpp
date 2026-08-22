@@ -1,12 +1,15 @@
 #include "storage/driver_leveldb.h"
 #include "types.h"
+#include <functional>
 #include <leveldb/db.h>
 #include <leveldb/options.h>
 #include <leveldb/slice.h>
 #include <leveldb/status.h>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 DBStatus convert_leveldb_status(leveldb::Status &s) {
   if (s.ok())
@@ -52,6 +55,13 @@ DBStatus LevelDBStorageDriver::Delete(std::string_view key) {
   auto s = _db->Delete(leveldb::WriteOptions(), k);
   return convert_leveldb_status(s);
 }
+// std::pair<DBStatus, std::vector<ByteVector>> LevelDBStorageDriver::Query(std::function<std::pair<std::string, ByteVector>> c) {
+//     auto iter = _db->NewIterator(leveldb::ReadOptions());
+//     for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+//         c(iter->value());
+//     }
+// };
+// Constructors and Destructors on LevelDBStorageDriver
 LevelDBStorageDriver::LevelDBStorageDriver(const std::string db_path) {
   leveldb::Options o;
   o.create_if_missing = true;

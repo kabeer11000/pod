@@ -27,4 +27,4 @@ cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE="/home/k0x/vcpkg/scripts/buildsystems
 or ofcourse use VCPKG_ROOT.
 
 and then:
-watchexec -e cpp,h -r -- "cmake --build build && ./build/pod"
+watchexec -e cpp,h -r -- "cmake --build build --parallel --verbose && ./build/pod"

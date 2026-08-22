@@ -1,0 +1,13 @@
+Pod Protocol definations.
+These are currently defined in Typescript (I am proficient in Typescript)
+In the future these will be represented in ProtoBufs or QuickType (JSON)
+
+These describe the request and acknoledgement events sent from client and sent by the Pod backend.
+Supported by both Pods (the router) and Pod (the database) and all clients.
+
+next_cursor value is last document's ID that was in the result set after limits.
+cursor property when applied causes backend to retrieve document list,
+and then discards the document at cursor index and everything before.
+
+
+Read ./defination.ts for more info.

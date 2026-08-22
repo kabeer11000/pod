@@ -7,3 +7,12 @@
 // When pods recieves a request it adds a Task to parse request
 // Within the closure we add code which enqueues a outbound/ongoing proxy request to 
 // outbound_map<request_id, .
+// 
+
+#include <mutex>
+class OutboundMap {
+    private:
+        std::mutex _mu;
+    public:
+        void 
+};
