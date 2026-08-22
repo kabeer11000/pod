@@ -2,7 +2,7 @@ import { uuidv7 } from "vendor/uuid7";
 import { CollectionReference } from "references/collection";
 import type { PodReference } from "references/pod";
 
-class DocumentReference {
+export class DocumentReference {
     readonly type = "pod/document";
     _db: PodReference;
     _path: string[];
@@ -24,6 +24,7 @@ function doc(
         const collection = PodOrCollectionReference as CollectionReference;
         const id: string = _path.at(-1) ?? uuidv7();
         _path.push(id);
+        return new DocumentReference(collection._db, _path);
     }
     return new DocumentReference(PodOrCollectionReference, _path);
 }

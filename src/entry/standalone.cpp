@@ -5,6 +5,7 @@
 #include "network/ws/actions.h"
 #include "network/ws/handlers/interface.h"
 #include "network/ws/socket_registry.h"
+#include "network/ws/wire_protocol.h"
 #include "storage/interface.h"
 #include "uwebsockets/App.h"
 #include <boost/uuid/uuid_generators.hpp>
@@ -33,7 +34,7 @@ auto JSONResponder(auto &ws, auto &response) {
     auto payload = json(response.value()).dump();
     ws->send(payload, uWS::OpCode::TEXT);
   } else {
-      auto payload = json(response.value()).dump();
+    auto payload = json(response.value()).dump();
     ws->send(payload, uWS::OpCode::TEXT);
   }
 };
@@ -85,39 +86,13 @@ int entry_standalone(StorageDriver &d) {
                            "Parsed JSON action of Queued Task (" + conn_id +
                                ")" + "(" + action + ")");
 
-                       if (action == "insert") {
-                         InsertRequest parsed = parsed_message;
-                         auto response = insert_handler(d, parsed);
-                         Log(LogLevel::Info, "standalone",
-                             "Got insert response for Queued Task (" + conn_id +
-                                 ")");
+                       if (action == "READ") {
+                         ReadRequest parsed = parsed_message;
+                         auto response = read_handler(d, parsed);
                          loop->defer([conn_id, response]() {
                            if (auto *ws =
                                    global_socket_registry().Lookup(conn_id))
                              JSONResponder(ws, response);
-                           Log(LogLevel::Info, "standalone",
-                               "Sent insert response for Queued Task (" +
-                                   conn_id + ")");
-                         });
-                       } else if (action == "get") {
-                         GetRequest parsed = parsed_message;
-                         auto response = get_handler(d, parsed);
-                         loop->defer([conn_id, response]() {
-                           if (auto *ws =
-                                   global_socket_registry().Lookup(conn_id))
-                             JSONResponder(ws, response);
-                         });
-                       } else {
-                         PodHandlerError err{.reason =
-                                                 "Unknown action: " + action};
-                         auto packed = json::to_msgpack(err);
-                         std::string payload(
-                             reinterpret_cast<const char *>(packed.data()),
-                             packed.size());
-                         loop->defer([conn_id, payload]() {
-                           if (auto *ws =
-                                   global_socket_registry().Lookup(conn_id))
-                             ws->send(payload, uWS::OpCode::BINARY);
                          });
                        }
                      },
