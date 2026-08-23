@@ -17,7 +17,7 @@ function parseMessagePack(
     return decodeMsgPack(bytes) as _IResponseEventWithoutSubscription;
 }
 
-interface _PodConstructorConfiguration {
+export interface _PodConstructorConfiguration {
     server: {
         uri: string;
         token: string;
@@ -34,6 +34,10 @@ interface _IPendingEventValue {
     _packet: Object;
     resolve: (d: _IResponseEventWithoutSubscription) => void; // fixed: responses, not requests
     reject: (d: _IResponseEventWithoutSubscription) => void; // fixed: responses, not requests
+}
+
+export function pod(configuration: _PodConstructorConfiguration): PodReference {
+    return new PodReference(configuration);
 }
 
 export class PodReference {

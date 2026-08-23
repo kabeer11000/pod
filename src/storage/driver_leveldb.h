@@ -16,7 +16,9 @@ public:
   DBStatus Put(std::string_view key, ByteView value) override;
   std::pair<DBStatus, ByteVector> Get(std::string_view key) override;
   DBStatus Delete(std::string_view key) override;
-  // std::pair<DBStatus, std::vector<ByteVector>>  Query(std::function<std::pair<std::string, ByteVector>>) override;
+  void ScanPrefix(std::string_view prefix,
+                  const std::function<void(std::string_view key,
+                                            ByteView value)> &visitor) override;
 
 private:
   leveldb::DB *_db;

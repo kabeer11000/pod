@@ -32,3 +32,13 @@ target_link_libraries(pod PRIVATE
     unofficial::uwebsockets::uwebsockets
     Boost::headers
 )
+
+# Standalone codec test binary - the order-preserving index key encoding is
+# pure (no LevelDB/uWS dependency), so it gets its own lightweight target
+# rather than needing the full server to run its assertions.
+add_executable(pod_tests
+    tests/codec_test.cpp
+    src/indexing/codec.cpp
+)
+target_include_directories(pod_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(pod_tests PRIVATE nlohmann_json::nlohmann_json)

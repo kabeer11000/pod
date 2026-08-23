@@ -2,9 +2,11 @@
 #include "types.h"
 #include <functional>
 #include <leveldb/db.h>
+#include <leveldb/iterator.h>
 #include <leveldb/options.h>
 #include <leveldb/slice.h>
 #include <leveldb/status.h>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -55,12 +57,28 @@ DBStatus LevelDBStorageDriver::Delete(std::string_view key) {
   auto s = _db->Delete(leveldb::WriteOptions(), k);
   return convert_leveldb_status(s);
 }
-// std::pair<DBStatus, std::vector<ByteVector>> LevelDBStorageDriver::Query(std::function<std::pair<std::string, ByteVector>> c) {
-//     auto iter = _db->NewIterator(leveldb::ReadOptions());
-//     for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
-//         c(iter->value());
-//     }
-// };
+// A simple search method, which takes a callback function.
+// Gets an iterator at prefix passed and then iterates and
+// get all keys which have the prefix as a substring (passed to callback one by one)
+// This way we can have an accumulator that saves and responds
+void LevelDBStorageDriver::ScanPrefix(
+    std::string_view prefix,
+    const std::function<void(std::string_view key, ByteView value)>
+        &visitor) {
+  leveldb::Slice prefix_slice(prefix.data(), prefix.size());
+  std::unique_ptr<leveldb::Iterator> iter(
+      _db->NewIterator(leveldb::ReadOptions()));
+  for (iter->Seek(prefix_slice); iter->Valid(); iter->Next()) {
+    leveldb::Slice key = iter->key();
+    if (key.size() < prefix.size() ||
+        std::string_view(key.data(), prefix.size()) != prefix)
+      break; // past the prefix range - LevelDB iterates in key order
+    leveldb::Slice value = iter->value();
+    visitor(std::string_view(key.data(), key.size()),
+            ByteView(reinterpret_cast<const uint8_t *>(value.data()),
+                     value.size()));
+  }
+}
 // Constructors and Destructors on LevelDBStorageDriver
 LevelDBStorageDriver::LevelDBStorageDriver(const std::string db_path) {
   leveldb::Options o;

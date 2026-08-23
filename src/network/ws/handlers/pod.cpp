@@ -13,6 +13,7 @@
 #include <nlohmann/detail/value_t.hpp>
 #include <nlohmann/json.hpp>
 #include <nlohmann/json_fwd.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,21 @@ std::string joinPath(const std::vector<std::string> &segments) {
       path += '/';
   }
   return path;
+}
+
+// The `_sys/...` namespace (cluster metadata, the index manifest at
+// `_sys/indexes`) and any path containing ':' (the index-entry keyspace,
+// `idx:<id>:...`) are reserved for internal bookkeeping. Rejecting them here
+// - the one place all client-supplied document paths funnel through -
+// keeps the reserved keyspaces provably disjoint from user data rather than
+// merely unlikely to collide.
+bool is_reserved_path(const std::vector<std::string> &segments) {
+  if (!segments.empty() && segments.front().starts_with("_sys"))
+    return true;
+  for (const auto &segment : segments)
+    if (segment.find(':') != std::string::npos)
+      return true;
+  return false;
 }
 // Insert handler
 // std::expected<InsertResponse, PodHandlerError>
@@ -107,8 +123,8 @@ std::string joinPath(const std::vector<std::string> &segments) {
 std::expected<ReadResponse, ErrorResponse> read_handler(StorageDriver &d,
                                                         ReadRequest &packet) {
   std::vector<std::string> path = splitPath(packet.payload.path);
-  /* Invalid document path */
-  if (path.size() % 2 == 0)
+  /* Invalid document path: document paths are even-length (collection/id pairs) */
+  if (path.size() % 2 != 0)
     return std::unexpected(ErrorResponse{
         .meta =
             AckMetaGeneric{
@@ -161,4 +177,172 @@ std::expected<ReadResponse, ErrorResponse> read_handler(StorageDriver &d,
                                                            .data = data,
                                                        }}};
   return r;
+};
+
+// Write handler
+std::expected<WriteResponse, ErrorResponse>
+write_handler(StorageDriver &d, WriteRequest &packet,
+             IndexEngine *index_engine) {
+  std::vector<std::string> path = splitPath(packet.payload.path);
+  /* Invalid document path: document paths are even-length (collection/id pairs) */
+  if (path.size() % 2 != 0)
+    return std::unexpected(ErrorResponse{
+        .meta =
+            AckMetaGeneric{
+                .type = "ACK",
+                .request_id = packet.meta.request_id,
+                .timestamp = current_iso8601_timestamp(),
+                .status = 400,
+            },
+        .payload = ErrorPayload{
+            .code = "INVALID_PATH",
+            .message = "Got collection path for a document level write.",
+        }});
+  if (is_reserved_path(path))
+    return std::unexpected(ErrorResponse{
+        .meta =
+            AckMetaGeneric{
+                .type = "ACK",
+                .request_id = packet.meta.request_id,
+                .timestamp = current_iso8601_timestamp(),
+                .status = 403,
+            },
+        .payload = ErrorPayload{
+            .code = "RESERVED_PATH",
+            .message = "Paths starting with '_sys' or containing ':' are "
+                       "reserved for internal use.",
+        }});
+
+  const auto write_path = joinPath(path);
+  nlohmann::json new_data = packet.payload.data;
+
+  // Fetched whenever a merge needs the previous value, OR an index needs to
+  // know the previous indexed values to remove its stale entry - not just
+  // under `merge`, since a full overwrite can still change indexed fields.
+  std::optional<nlohmann::json> old_data;
+  if (packet.payload.merge || index_engine != nullptr) {
+    const auto [get_status, existing] = d.Get(write_path);
+    if (get_status.is_ok && !get_status.is_not_found)
+      old_data = json::from_msgpack(existing);
+  }
+
+  nlohmann::json data = new_data;
+  if (packet.payload.merge && old_data.has_value()) {
+    auto merged = *old_data;
+    merged.merge_patch(new_data);
+    data = merged;
+  }
+
+  const auto binary_data = json::to_msgpack(data);
+  const auto db_status = d.Put(write_path, binary_data);
+  if (!db_status.is_ok)
+    return std::unexpected(
+        ErrorResponse{.meta =
+                          AckMetaGeneric{
+                              .type = "ACK",
+                              .request_id = packet.meta.request_id,
+                              .timestamp = current_iso8601_timestamp(),
+                              .status = 401,
+                          },
+                      .payload = ErrorPayload{
+                          .code = "INTERNAL_WRITE_FAILED",
+                          .message = db_status.message,
+                      }});
+
+  if (index_engine != nullptr) {
+    // The collection is every path segment except the trailing document id.
+    std::vector<std::string> collection_segments(path.begin(), path.end() - 1);
+    index_engine->ApplyWrite(joinPath(collection_segments), write_path,
+                             old_data, data);
+  }
+
+  return WriteResponse{.meta =
+                            AckMetaGeneric{
+                                .type = "ACK",
+                                .request_id = packet.meta.request_id,
+                                .timestamp = current_iso8601_timestamp(),
+                                .status = 200,
+                            },
+                        .payload = WriteResponsePayload{.path = write_path}};
+};
+
+// Delete handler (document-level only - deleting an entire collection is
+// MUTATE_MANY's job, not implemented yet).
+std::expected<DeleteResponse, ErrorResponse>
+delete_handler(StorageDriver &d, DeleteRequest &packet,
+              IndexEngine *index_engine) {
+  std::vector<std::string> path = splitPath(packet.payload.path);
+  if (path.size() % 2 != 0)
+    return std::unexpected(ErrorResponse{
+        .meta =
+            AckMetaGeneric{
+                .type = "ACK",
+                .request_id = packet.meta.request_id,
+                .timestamp = current_iso8601_timestamp(),
+                .status = 400,
+            },
+        .payload = ErrorPayload{
+            .code = "INVALID_PATH",
+            .message = "Got collection path for a document level delete.",
+        }});
+  if (is_reserved_path(path))
+    return std::unexpected(ErrorResponse{
+        .meta =
+            AckMetaGeneric{
+                .type = "ACK",
+                .request_id = packet.meta.request_id,
+                .timestamp = current_iso8601_timestamp(),
+                .status = 403,
+            },
+        .payload = ErrorPayload{
+            .code = "RESERVED_PATH",
+            .message = "Paths starting with '_sys' or containing ':' are "
+                       "reserved for internal use.",
+        }});
+
+  const auto delete_path = joinPath(path);
+
+  // Needed (when indexing) to know which physical index entries to remove;
+  // also doubles as the affected_count/idempotency signal.
+  std::optional<nlohmann::json> old_data;
+  if (index_engine != nullptr) {
+    const auto [get_status, existing] = d.Get(delete_path);
+    if (get_status.is_ok && !get_status.is_not_found)
+      old_data = json::from_msgpack(existing);
+  }
+
+  const auto db_status = d.Delete(delete_path);
+  if (!db_status.is_ok)
+    return std::unexpected(
+        ErrorResponse{.meta =
+                          AckMetaGeneric{
+                              .type = "ACK",
+                              .request_id = packet.meta.request_id,
+                              .timestamp = current_iso8601_timestamp(),
+                              .status = 401,
+                          },
+                      .payload = ErrorPayload{
+                          .code = "INTERNAL_DELETE_FAILED",
+                          .message = db_status.message,
+                      }});
+
+  if (index_engine != nullptr && old_data.has_value()) {
+    std::vector<std::string> collection_segments(path.begin(), path.end() - 1);
+    index_engine->ApplyDelete(joinPath(collection_segments), delete_path,
+                              *old_data);
+  }
+
+  return DeleteResponse{
+      .meta =
+          AckMetaGeneric{
+              .type = "ACK",
+              .request_id = packet.meta.request_id,
+              .timestamp = current_iso8601_timestamp(),
+              .status = 200,
+          },
+      .payload = DeleteResponsePayload{
+          .target = CollectionOrDocument::Document,
+          .path = delete_path,
+          .affected_count = old_data.has_value() ? 1u : 0u,
+      }};
 };

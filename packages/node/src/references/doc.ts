@@ -12,26 +12,17 @@ export class DocumentReference {
     }
 }
 
-function doc(db: PodReference, path: string): DocumentReference;
-function doc(collection: CollectionReference, path: string): DocumentReference;
-function doc(
-    PodOrCollectionReference: PodReference | CollectionReference,
-    path: string,
+export function doc(db: PodReference, path: string): DocumentReference;
+export function doc(collection: CollectionReference, id?: string): DocumentReference;
+export function doc(
+    dbOrCollection: PodReference | CollectionReference,
+    pathOrId?: string,
 ): DocumentReference {
-    const _path: string[] = path.split("/");
-    if (PodOrCollectionReference instanceof CollectionReference) {
-        // Generate DocumentId
-        const collection = PodOrCollectionReference as CollectionReference;
-        const id: string = _path.at(-1) ?? uuidv7();
-        _path.push(id);
-        return new DocumentReference(collection._db, _path);
+    if (dbOrCollection instanceof CollectionReference) {
+        const collection = dbOrCollection;
+        const id: string = pathOrId ?? uuidv7();
+        return new DocumentReference(collection._db, [...collection._path, id]);
     }
-    return new DocumentReference(PodOrCollectionReference, _path);
+    const _path: string[] = (pathOrId ?? "").split("/").filter(Boolean);
+    return new DocumentReference(dbOrCollection, _path);
 }
-
-// if (PodOrCollectionReference instanceof CollectionReference) {
-//     // Generate DocumentId
-//     const collection = PodOrCollectionReference;
-//     const id: string = _path.at(-1) ?? uuidv7();
-//     _path.push(id);
-// }
