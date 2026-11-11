@@ -1,3 +1,11 @@
+/* ==========================================================================
+   Pod wire protocol. See ./README for semantics.
+
+   Connection:  ws://<host>:<port>/webchannel?ns=<namespace>&t=<token>
+     ns  namespace (scope) for the whole connection, [A-Za-z0-9_-]{1,64}
+     t   optional HS256 JWT (see README "Authentication")
+   ========================================================================== */
+
 export type IFilterOperations =
   | "EQUAL"
   | "GREATER"
@@ -17,7 +25,23 @@ export type ISubscriptionEventType =
   | "ADDED"
   | "MODIFIED"
   | "REMOVED"
-  | "RESET";
+  | "RESET"
+  | "SYNCED";
+
+export type IErrorCode =
+  | "MALFORMED_REQUEST"
+  | "UNKNOWN_TYPE"
+  | "INVALID_ARGUMENT"
+  | "INVALID_PATH"
+  | "INVALID_CURSOR"
+  | "UNAUTHENTICATED"
+  | "PERMISSION_DENIED"
+  | "NOT_FOUND"
+  | "ALREADY_EXISTS"
+  | "DOCUMENT_TOO_LARGE"
+  | "UNAVAILABLE"
+  | "INTERNAL"
+  | "DATA_CORRUPTION";
 
 /* ==========================================================================
    Base Envelopes & Discriminators
@@ -38,10 +62,21 @@ export interface IErrorResponse {
     status: number;
   };
   payload: {
-    code: string;
+    code: IErrorCode;
     message: string;
     details?: Record<string, any>;
   };
+}
+
+export interface IFilter {
+  field: string;
+  op: IFilterOperations;
+  value: any;
+}
+
+export interface IOrderBy {
+  field: string;
+  direction?: IOrderByDirections; // default ASCENDING
 }
 
 /* ==========================================================================
@@ -59,7 +94,7 @@ export interface IReadResponse {
     document: {
       path: string;
       data: Record<string, any> | null;
-      _v?: IDocumentVersion;
+      _v?: IDocumentVersion | null;
     };
   };
 }
@@ -69,15 +104,8 @@ export interface IQueryRequest {
   payload: {
     path: string; // Odd path (Collection)
     project?: string[]; // Optional field projection
-    where?: {
-      field: string;
-      op: IFilterOperations;
-      value: any;
-    }[];
-    orderBy?: {
-      field: string;
-      direction: IOrderByDirections;
-    }[];
+    where?: IFilter[];
+    orderBy?: IOrderBy[];
     limit?: number;
     cursor?: string;
   };
@@ -93,6 +121,11 @@ export interface IQueryResponse {
     }[];
     has_more: boolean;
     next_cursor: string | null;
+    // How the server executed the query (diagnostics).
+    plan: {
+      index: string | null; // id of the secondary index used, null = collection scan
+      documents_scanned: number;
+    };
   };
 }
 
@@ -131,11 +164,7 @@ export interface IMutateManyRequest {
   meta: { type: "MUTATE_MANY"; request_id: string };
   payload: {
     path: string; // Odd path (Collection)
-    where?: {
-      field: string;
-      op: IFilterOperations;
-      value: any;
-    }[];
+    where?: IFilter[];
     remove?: string[]; // Field paths to strip across matched docs
     set?: Record<string, any>; // Field updates to merge across matched docs
   };
@@ -150,12 +179,65 @@ export interface IMutateManyResponse {
 }
 
 /* ==========================================================================
+   Secondary indexes (require an admin token unless no rules are configured)
+   ========================================================================== */
+
+export interface IIndexField {
+  field: string;
+  // VALUE indexes the field's value; ARRAY_CONTAINS indexes each element of
+  // an array field (serves ARRAY.IN filters). At most one per index.
+  mode?: "VALUE" | "ARRAY_CONTAINS";
+}
+
+export interface IIndexDefinition {
+  id: string; // deterministic, derived from collection + fields
+  collection: string; // collection id (last path segment), e.g. "posts"
+  fields: IIndexField[];
+}
+
+export interface ICreateIndexRequest {
+  meta: { type: "CREATE_INDEX"; request_id: string };
+  payload: { collection: string; fields: IIndexField[] };
+}
+
+export interface ICreateIndexResponse {
+  meta: IAckMetaGeneric; // 201 created, 200 already existed
+  payload: { index: IIndexDefinition; documents_indexed: number };
+}
+
+export interface IDropIndexRequest {
+  meta: { type: "DROP_INDEX"; request_id: string };
+  payload: { id: string };
+}
+
+export interface IDropIndexResponse {
+  meta: IAckMetaGeneric;
+  payload: { id: string; status: "DROPPED" };
+}
+
+export interface IListIndexesRequest {
+  meta: { type: "LIST_INDEXES"; request_id: string };
+  payload: {};
+}
+
+export interface IListIndexesResponse {
+  meta: IAckMetaGeneric;
+  payload: { indexes: IIndexDefinition[] };
+}
+
+/* ==========================================================================
    Subscription System
    ========================================================================== */
 
 /**
  * Client initiates a real-time listener on a Document (even path)
  * or a Collection Query (odd path).
+ *
+ * resume_token: the token of the last event the client fully applied (an
+ * event with commit_complete = true). If the server still retains the commit
+ * log from that point, it answers with resumed = true and sends only the
+ * deltas between the client's view and the current view, followed by SYNCED.
+ * Otherwise it sends RESET followed by a full SNAPSHOT.
  */
 export interface ISubscribeRequest {
   meta: { type: "SUBSCRIBE"; request_id: string };
@@ -163,15 +245,8 @@ export interface ISubscribeRequest {
     subscription_id: string;
     path: string;
     project?: string[];
-    where?: {
-      field: string;
-      op: IFilterOperations;
-      value: any;
-    }[];
-    orderBy?: {
-      field: string;
-      direction: IOrderByDirections;
-    }[];
+    where?: IFilter[];
+    orderBy?: IOrderBy[];
     limit?: number;
     resume_token?: string; // For seamless reconnects
   };
@@ -185,6 +260,7 @@ export interface ISubscribeResponse {
   payload: {
     subscription_id: string;
     status: "SUBSCRIBED";
+    resumed: boolean;
   };
 }
 
@@ -200,6 +276,9 @@ export interface ISubscriptionEventPush {
   payload: {
     event_type: ISubscriptionEventType;
     resume_token: string;
+    // true on the last event produced by a commit for this subscription:
+    // the client's view is consistent with resume_token after applying it.
+    commit_complete: boolean;
 
     // Populated on event_type === "SNAPSHOT"
     snapshot?: {
@@ -268,6 +347,9 @@ export type IRequestEvent =
   | IWriteRequest
   | IDeleteRequest
   | IMutateManyRequest
+  | ICreateIndexRequest
+  | IDropIndexRequest
+  | IListIndexesRequest
   | ISubscribeRequest
   | IUnsubscribeRequest
   | IClientEventAck;
@@ -278,6 +360,9 @@ export type IResponseEvent =
   | IWriteResponse
   | IDeleteResponse
   | IMutateManyResponse
+  | ICreateIndexResponse
+  | IDropIndexResponse
+  | IListIndexesResponse
   | ISubscribeResponse
   | IUnsubscribeResponse
   | ISubscriptionEventPush

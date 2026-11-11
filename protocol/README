@@ -5,9 +5,106 @@ In the future these will be represented in ProtoBufs or QuickType (JSON)
 These describe the request and acknoledgement events sent from client and sent by the Pod backend.
 Supported by both Pods (the router) and Pod (the database) and all clients.
 
-next_cursor value is last document's ID that was in the result set after limits.
-cursor property when applied causes backend to retrieve document list,
-and then discards the document at cursor index and everything before.
+Read ./defination.ts for the message shapes. The semantics below are what
+the Pod server implements.
 
+-------------------------------------------------------------------------------
+Connection & namespaces (scopes)
+-------------------------------------------------------------------------------
+ws://<host>:<port>/webchannel?ns=<namespace>
 
-Read ./defination.ts for more info.
+The namespace is fixed for the lifetime of the connection and every request
+on it is confined to that namespace: the same path in two namespaces is two
+different documents, and subscriptions only see commits in their namespace.
+Without ?ns the server's DEFAULT_NAMESPACE (default "default") is used.
+Namespaces are 1-64 characters of [A-Za-z0-9_-]; anything else is rejected
+with HTTP 400 at upgrade time.
+
+Text frames carry JSON, binary frames carry MessagePack. Responses and events
+use the encoding of the request that caused them. Requests on one connection
+are processed strictly in order; responses carry the request's request_id.
+
+-------------------------------------------------------------------------------
+Paths
+-------------------------------------------------------------------------------
+'/'-separated, alternating collection/document: users (collection),
+users/u1 (document), users/u1/posts (sub-collection). Leading/trailing '/'
+are ignored. Rejected: empty segments (a//b), "." / "..", NUL bytes, invalid
+UTF-8, segments of the form __name__, >100 segments, segments >1500 bytes.
+
+-------------------------------------------------------------------------------
+Operations
+-------------------------------------------------------------------------------
+READ        document path. Missing document: ACK status 404, data null.
+WRITE       document path. merge=false replaces, merge=true deep-merges
+            (objects merge recursively; arrays/null/scalars replace).
+            Status 201 when created, 200 when updated. _v starts at 1 and
+            increments on every change.
+DELETE      document path: deletes the document AND every sub-collection
+            beneath it. Collection path: deletes every document in it and
+            beneath it. Atomic. affected_count = documents deleted.
+QUERY       collection path; direct documents only (not sub-collections).
+MUTATE_MANY collection path; applies `remove` (field paths) then `set`
+            (field path -> value) to every document matching `where`,
+            atomically. remove/set paths may not overlap. affected_count
+            counts documents that actually changed.
+
+Field paths use dot notation (user.emails). `project` returns only the listed
+fields (all fields when empty/absent).
+
+where filters are AND-ed; a missing field never matches:
+  EQUAL                 deep equality (1 == 1.0)
+  GREATER / LESSER / GREATER_EQUAL / LESSER_EQUAL
+                        only match values of the same type class
+  ARRAY.IN              field is an array containing `value`
+  ARRAY.NOT_IN          field is an array not containing `value`
+  ARRAY.EQUALS          field is an array equal to `value` (an array)
+  ARRAY.ELEMENT_AT      value = {"index": n, "value": v}: field[n] == v
+                        (negative n counts from the end)
+
+Value order: null < boolean < number < string < array < object.
+
+orderBy: documents missing an orderBy field are excluded. Ties are broken by
+document id in the direction of the last orderBy clause (ascending if none).
+
+limit: positive integer. next_cursor value is last document's ID that was in
+the result set after limits. cursor property when applied causes backend to
+retrieve document list, and then discards the document at cursor index and
+everything before. If the cursor document changed or stopped matching since,
+the page resumes after its current sort position; if it was deleted the
+request fails with INVALID_CURSOR.
+
+-------------------------------------------------------------------------------
+Subscriptions
+-------------------------------------------------------------------------------
+SUBSCRIBE  document path, or collection path with optional where / orderBy /
+           limit / project (where/orderBy/limit are rejected on documents).
+           subscription_id is chosen by the client, unique per connection.
+           Server sends: ACK(SUBSCRIBED), [EVENT RESET], EVENT SNAPSHOT.
+Then for every commit affecting the result: EVENT ADDED / MODIFIED / REMOVED.
+Applying deltas in order to the client array reproduces the server's view:
+  REMOVED   remove at old_index
+  ADDED     insert at new_index
+  MODIFIED  remove at old_index, then insert the new document at new_index
+resume_token is the database commit sequence number (a decimal string). A
+SUBSCRIBE with a resume_token that is not the current sequence receives
+RESET before the SNAPSHOT (no change log is retained yet). Clients ACK events
+with { meta: {type: "ACK", subscription_id}, payload: {resume_token} }; this
+has no reply. UNSUBSCRIBE replies UNSUBSCRIBED (NOT_FOUND if unknown).
+Closing the socket drops all its subscriptions. A client too slow to drain
+its socket (64 MiB buffered) is disconnected rather than silently losing
+events, so it can resubscribe.
+
+-------------------------------------------------------------------------------
+Errors
+-------------------------------------------------------------------------------
+{ meta: { type: "ERROR", request_id, timestamp, status }, payload: { code, message } }
+  400 MALFORMED_REQUEST  frame could not be decoded
+  400 UNKNOWN_TYPE       unsupported meta.type
+  400 INVALID_ARGUMENT   bad payload field
+  400 INVALID_PATH       malformed path or wrong path kind
+  400 INVALID_CURSOR     cursor document missing / invalid
+  404 NOT_FOUND          unknown subscription
+  409 ALREADY_EXISTS     duplicate subscription_id
+  413 DOCUMENT_TOO_LARGE encoded document over 4 MiB
+  500 INTERNAL / DATA_CORRUPTION

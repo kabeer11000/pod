@@ -11,20 +11,62 @@ Kabeer Jaffri
 
 Roadmap:
 
-- Create working database which is real-time fetchable via Websockets
+- [done] Create working database which is real-time fetchable via Websockets
+- [done] Namespaces (scopes): every connection is confined to one namespace
 - Add custom indexing via key-scoping e.g. id_author = value
 - Add snapshotting and delta resolution - 1st Client release
 - Add CEL and rules-engine
 - Write ahead logging
-- Resume tokens and Resume logs
+- Resume tokens and Resume logs (tokens exist; a resume currently re-snapshots)
+
+===============================================================================
+
+Layout:
+
+src/storage     StorageDriver interface + LevelDB driver (atomic batches, prefix scans)
+src/db          Database engine: paths, namespaces, key layout, documents,
+                field paths, query evaluation, CRUD / QUERY / MUTATE_MANY
+src/realtime    Subscriptions: snapshots, ordered deltas, resume tokens
+src/network/ws  Wire protocol parsing and request handlers
+src/entry       Standalone server (uWebSockets + thread pool)
+tests/unit      C++ unit tests (pod_tests)
+tests/e2e       End-to-end protocol tests (bun)
+bench           Load generator / benchmark (bun)
+examples/web    Pod Board, a real-time collaborative example app
 
 ===============================================================================
 
 Running:
 
-Build requires vcpkg configured and $VCPKG_ROOT configured
-cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE="/home/k0x/vcpkg/scripts/buildsystems/vcpkg.cmake"
-or ofcourse use VCPKG_ROOT.
+Build requires vcpkg configured and $VCPKG_ROOT configured, and a C++23
+compiler (GCC 13+).
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+cmake --build build --parallel
 
-and then:
+./build/pod
+Clients connect to ws://localhost:3000/webchannel?ns=<namespace>
+
+Configuration is read from the environment (see .env.example):
+POD_PORT, POD_STORAGE_PATH, DEFAULT_NAMESPACE, POD_THREADS, POD_SYNC_WRITES,
+POD_LOG_LEVEL.
+
+Development loop:
 watchexec -e cpp,h -r -- "cmake --build build --parallel --verbose && ./build/pod"
+
+===============================================================================
+
+Testing:
+
+cmake --build build --target pod_tests && ./build/pod_tests
+cd tests/e2e && bun install && POD_BIN=../../build/pod bun test
+  (or: tests/e2e/run-external.sh ./build/pod)
+
+Benchmark:
+
+bench/run.sh ./build/pod bun bench/pod-bench.ts
+  CONNECTIONS, DEPTH, DURATION_MS and SUBSCRIBERS tune the load.
+
+Example app:
+
+bench/run.sh ./build/pod bun examples/web/demo.ts      (headless walkthrough)
+cd examples/web && bun run dev                         (browser UI)

@@ -11,11 +11,14 @@
 // Thread sleeps if mutex isn't available.
 // Thread sleeps if mutex aquired and condition is not valid (array is empty).
 void TaskQueue::push(Task t) {
-    // Is lock currently available if so aquire
-    std::unique_lock<std::mutex> lock(_mu);
-    // Make the task object an rvalue such that a 0-copy
-    _queue.push(std::move(t));
-    // Since we're using std::unique_lock mutex is automatically released when this function's scope ends (Destructor)
+    {
+        // Is lock currently available if so aquire
+        std::unique_lock<std::mutex> lock(_mu);
+        if (_closed)
+            return;
+        // Make the task object an rvalue such that a 0-copy
+        _queue.push(std::move(t));
+    }
     // Notify a thread sleeping on pop that new data is available
     _cv.notify_one();
 }
@@ -23,10 +26,19 @@ bool TaskQueue::pop(Task& t) {
     // Is lock currently available if so aquire
     std::unique_lock<std::mutex> lock(_mu);
     _cv.wait(lock, [&] {
-        return !_queue.empty();
+        return _closed || !_queue.empty();
     });
+    if (_queue.empty())
+        return false; // closed and drained
     t = std::move(_queue.front());
     _queue.pop(); // Pops front value
     return true;
     // Since we're using std::unique_lock mutex is automatically released when this function's scope ends (Destructor)
+}
+void TaskQueue::close() {
+    {
+        std::unique_lock<std::mutex> lock(_mu);
+        _closed = true;
+    }
+    _cv.notify_all();
 }

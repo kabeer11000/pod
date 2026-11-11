@@ -23,8 +23,15 @@ class TaskQueue {
         // It lets go of the mutex and sleeps. When woken up
         // it reaquires the mutex (which can also cause sleep-behaviour if its locked)
         std::condition_variable _cv;
+        // Once closed, push() is a no-op and pop() drains the remaining tasks
+        // and then returns false so worker threads can exit.
+        bool _closed = false;
     public:
         TaskQueue() = default;
         void push(Task t);
+        // Blocks until a task is available. Returns false once the queue has
+        // been closed and fully drained.
         bool pop(Task& t);
+        // Wakes every waiting worker; used for graceful shutdown.
+        void close();
 };

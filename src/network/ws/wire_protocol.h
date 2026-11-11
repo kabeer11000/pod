@@ -1,208 +1,95 @@
+// Wire protocol (see protocol/defination.ts for the canonical TypeScript
+// definition). Requests are parsed and validated by hand rather than through
+// NLOHMANN_DEFINE_TYPE_* so that optional fields, `null`, and malformed input
+// all produce precise INVALID_ARGUMENT errors instead of exceptions.
 #pragma once
+#include "db/error.h"
+#include "db/field_path.h"
+#include "db/index.h"
+#include "db/path.h"
+#include "db/query.h"
 #include <cstdint>
-#include <nlohmann/detail/macro_scope.hpp>
+#include <expected>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-/* ==========================================================================
-   Base Envelopes & Discriminators
-   ========================================================================== */
-using DocumentVersion = uint32_t;
-struct RequestMetaGeneric {
-  // READ | QUERY | WRITE | DELETE | MUTATE_MANY | SUBSCRIBE | ACK | UNSUBSCRIBE
-  // (ACK is client sending a acknoledgement for the subscription EVENT
-  // response)
+namespace pod::wire {
+
+using json = nlohmann::json;
+
+struct ReadRequest {
+  ResourcePath path;
+};
+
+struct QueryRequest {
+  ResourcePath path;
+  QuerySpec spec;
+  std::optional<std::string> cursor;
+};
+
+struct WriteRequest {
+  ResourcePath path;
+  bool merge = false;
+  json data;
+};
+
+struct DeleteRequest {
+  ResourcePath path;
+};
+
+struct MutateManyRequest {
+  ResourcePath path;
+  std::vector<Filter> where;
+  std::vector<FieldPath> remove;
+  std::vector<std::pair<FieldPath, json>> set;
+};
+
+struct SubscribeRequest {
+  std::string subscription_id;
+  ResourcePath path;
+  QuerySpec spec;
+  std::optional<std::string> resume_token;
+};
+
+struct UnsubscribeRequest {
+  std::string subscription_id;
+};
+
+// Client acknowledgement of an EVENT (meta.type == "ACK").
+struct ClientEventAck {
+  std::string subscription_id;
+  std::string resume_token;
+};
+
+// Extracts meta.type / meta.request_id. request_id is empty when absent (it
+// is not part of a client ACK).
+struct RequestMeta {
   std::string type;
   std::string request_id;
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RequestMetaGeneric, type, request_id)
+std::expected<RequestMeta, DbError> ParseMeta(const json &message);
 
-struct AckMetaGeneric {
-  std::string type = "ACK";
-  std::string request_id;
-  std::string timestamp;
-  uint32_t status;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AckMetaGeneric, type, request_id, timestamp,
-                                   type)
-struct ErrorPayload {
-  std::string code;
-  std::string message;
-  std::optional<nlohmann::json> details;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ErrorPayload, code, message, details)
-struct ErrorResponse {
-  AckMetaGeneric meta;
-  ErrorPayload payload;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ErrorResponse, meta, payload)
+std::expected<ReadRequest, DbError> ParseRead(const json &message);
+std::expected<QueryRequest, DbError> ParseQuery(const json &message);
+std::expected<WriteRequest, DbError> ParseWrite(const json &message);
+std::expected<DeleteRequest, DbError> ParseDelete(const json &message);
+std::expected<MutateManyRequest, DbError> ParseMutateMany(const json &message);
+std::expected<SubscribeRequest, DbError> ParseSubscribe(const json &message);
+std::expected<UnsubscribeRequest, DbError>
+ParseUnsubscribe(const json &message);
+std::expected<ClientEventAck, DbError> ParseClientAck(const json &message);
+std::expected<IndexDefinition, DbError> ParseCreateIndex(const json &message);
+// Returns the index id.
+std::expected<std::string, DbError> ParseDropIndex(const json &message);
 
-/* ==========================================================================
-   CRUD & Mutation Operations
-   ========================================================================== */
+// { type: "ACK", request_id, timestamp, status }
+json AckMeta(const std::string &request_id, uint32_t status);
+// { meta: { type: "ERROR", ... }, payload: { code, message, details? } }
+json ErrorMessage(const std::string &request_id, const DbError &error);
+// { path, data, _v } with optional projection applied.
+json DocumentJson(const Document &doc, const std::vector<FieldPath> &project);
 
-// ========= Read Handler ========= //
-struct ReadRequestPayload {
-  std::string path;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadRequestPayload, path)
-struct ReadRequest {
-  RequestMetaGeneric meta;
-  ReadRequestPayload payload;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadRequest, meta, payload)
-
-struct ReadResponsePayloadDocument {
-  std::string path;
-  std::optional<nlohmann::json> data;
-  std::optional<DocumentVersion> _v;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadResponsePayloadDocument, path, data, _v);
-
-struct ReadResponsePayload {
-  ReadResponsePayloadDocument document;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadResponsePayload, document);
-// meta.status = 404, and document.data = null but no error is thrown on
-// document not found
-struct ReadResponse {
-  AckMetaGeneric meta;
-  ReadResponsePayload payload;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadResponse, meta, payload)
-
-// ========= Query Handler ========= //
-struct WhereFilterItem {
-  std::string field;
-  std::string op;
-  nlohmann::json value;
-};
-enum class OrderByDirection { Ascending, Descending };
-NLOHMANN_JSON_SERIALIZE_ENUM(OrderByDirection,
-                             {
-                                 {OrderByDirection::Ascending, "ASCENDING"},
-                                 {OrderByDirection::Descending, "DESCENDING"},
-                             })
-struct OrderByClause {
-  std::string field;
-  OrderByDirection direction;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(OrderByClause, field, direction)
-using Cursor = std::string;
-struct QueryRequestPayload {
-  std::string path;
-  std::optional<std::vector<std::string>> project;
-  std::optional<WhereFilterItem> where;
-  std::optional<OrderByClause> orderBy;
-  std::optional<uint32_t> limit;
-  std::optional<Cursor> cursor;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(QueryRequestPayload, path, project, where,
-                                   orderBy, limit, cursor);
-
-struct QueryRequest {
-  RequestMetaGeneric meta;
-  QueryRequestPayload payload;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(QueryRequest, meta, payload);
-struct QueryResponsePayloadDocumentsItem {
-  std::string path;
-  nlohmann::json data;
-  std::optional<DocumentVersion> _v;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(QueryResponsePayloadDocumentsItem, path,
-                                   data, _v);
-struct QueryResponsePayload {
-  std::vector<QueryResponsePayloadDocumentsItem> documents;
-  bool has_more;
-  std::optional<Cursor> next_cursor;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(QueryResponsePayload, documents, has_more,
-                                   next_cursor);
-struct QueryResponse {
-  AckMetaGeneric meta;
-  QueryResponsePayload payload;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(QueryResponse, meta, payload);
-
-// ========= Write Handler ========= //
-struct WriteRequestPayload {
-  std::string path;
-  bool merge;
-  nlohmann::json data;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WriteRequestPayload, path, merge, data);
-struct WriteRequest {
-  RequestMetaGeneric meta;
-  WriteRequestPayload payload;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WriteRequest, meta, payload);
-struct WriteResponsePayload {
-  std::string path;
-  std::optional<DocumentVersion> _v;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WriteResponsePayload, path, _v);
-struct WriteResponse {
-  AckMetaGeneric meta;
-  WriteResponsePayload payload;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WriteResponse, meta, payload);
-
-// ========= Delete Handler ========= //
-struct DeleteRequestPayload {
-  std::string path;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DeleteRequestPayload, path);
-struct DeleteRequest {
-  RequestMetaGeneric meta;
-  DeleteRequestPayload payload;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DeleteRequest, meta, payload);
-enum class CollectionOrDocument { Collection, Document };
-NLOHMANN_JSON_SERIALIZE_ENUM(CollectionOrDocument,
-                             {
-                                 {CollectionOrDocument::Collection,
-                                  "COLLECTION"},
-                                 {CollectionOrDocument::Document, "DOCUMENT"},
-                             })
-
-struct DeleteResponsePayload {
-  CollectionOrDocument target;
-  std::string path;
-  uint32_t affected_count;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DeleteResponsePayload, target, path,
-                                   affected_count);
-struct DeleteResponse {
-  AckMetaGeneric meta;
-  DeleteResponsePayload payload;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DeleteResponse, meta, payload);
-
-// ========= MutateMany Handler ========= //
-struct MutateManyRequestPayload {
-    std::string path;
-    std::optional<WhereFilterItem> where;
-    std::optional<std::vector<std::string>> remove; // field paths to delete
-    std::optional<std::pair<std::string, nlohmann::json>> set; // field paths to update value to
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MutateManyRequestPayload, path, where, remove, set);
-struct MutateManyRequest {
-    RequestMetaGeneric meta;
-    MutateManyRequestPayload payload;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MutateManyRequest, meta, payload);
-struct MutateManyResponsePayload {
-    std::string path;
-    uint32_t affected_count;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MutateManyResponsePayload, path, affected_count);
-struct MutateManyResponse {
-    AckMetaGeneric meta;
-    MutateManyResponsePayload payload;
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MutateManyResponse, meta, payload);
-// ========= Subscription Handlers ========= //
+} // namespace pod::wire

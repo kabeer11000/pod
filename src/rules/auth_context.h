@@ -1,6 +1,8 @@
+#pragma once
 #include <string>
 
 struct AuthContext {
-    // This is for tracking namespaces / tenant_id
-    std::string namespace;
+  // The namespace / tenant the request is scoped to. (`namespace` is a C++
+  // keyword, hence `ns`.)
+  std::string ns;
 };

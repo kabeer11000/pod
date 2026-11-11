@@ -1,164 +1,240 @@
+// Request handlers for a Pod (single database node).
 #include "common/log.h"
-#include "common/timestamp.h"
 #include "network/ws/handlers/interface.h"
 #include "network/ws/wire_protocol.h"
-#include "sstream"
-#include "storage/interface.h"
-#include "string"
-#include <boost/uuid/time_generator_v7.hpp>
-#include <boost/uuid/uuid.hpp>
-#include <boost/uuid/uuid_io.hpp>
-#include <expected>
-#include <leveldb/options.h>
-#include <nlohmann/detail/value_t.hpp>
-#include <nlohmann/json.hpp>
-#include <nlohmann/json_fwd.hpp>
-#include <string>
-#include <vector>
+#include <exception>
+
+namespace pod {
 
 using json = nlohmann::json;
-std::vector<std::string> splitPath(const std::string &path) {
-  std::vector<std::string> segments;
-  std::stringstream ss(path);
-  std::string item;
 
-  while (std::getline(ss, item, '/')) {
-    if (!item.empty())
-      segments.push_back(item);
+RequestHandler::RequestHandler(Database &db, SubscriptionManager &subscriptions,
+                               MessageSink sink)
+    : _db(db), _subs(subscriptions), _sink(std::move(sink)) {}
+
+void RequestHandler::Handle(const ConnectionInfo &conn, std::string_view raw,
+                            WireEncoding encoding) {
+  json message;
+  try {
+    message = encoding == WireEncoding::Json
+                  ? json::parse(raw)
+                  : json::from_msgpack(raw.begin(), raw.end());
+  } catch (const std::exception &e) {
+    Log(LogLevel::Warn, "pod",
+        "Malformed message on (" + conn.conn_id + "): " + e.what());
+    _sink(conn.conn_id,
+          wire::ErrorMessage("", DbError{400, "MALFORMED_REQUEST",
+                                         "Message could not be decoded.",
+                                         std::nullopt}),
+          encoding);
+    return;
   }
-  return segments;
-}
-std::string joinPath(const std::vector<std::string> &segments) {
-  int total_size = 0;
-  for (const auto &segment : segments)
-    total_size += segment.size() + 1; // Acconting for "/" in between
 
-  std::string path;
-  // Single static heap allocation
-  path.reserve(total_size);
-  for (size_t i = 0; i < segments.size(); ++i) {
-    path += segments[i];
-    if (i < segments.size() - 1)
-      path += '/';
+  auto meta = wire::ParseMeta(message);
+  if (!meta) {
+    // Echo whatever request_id we can find so the client can correlate.
+    std::string rid;
+    if (message.is_object() && message.contains("meta") &&
+        message["meta"].is_object() &&
+        message["meta"].contains("request_id") &&
+        message["meta"]["request_id"].is_string())
+      rid = message["meta"]["request_id"].get<std::string>();
+    _sink(conn.conn_id, wire::ErrorMessage(rid, meta.error()), encoding);
+    return;
   }
-  return path;
+
+  Log(LogLevel::Debug, "pod",
+      "(" + conn.conn_id + ") [" + conn.ns + "] " + meta->type + " " +
+          meta->request_id);
+
+  std::optional<json> response;
+  try {
+    response =
+        Dispatch(conn, message, meta->type, meta->request_id, encoding);
+  } catch (const std::exception &e) {
+    Log(LogLevel::Error, "pod",
+        "Unhandled error processing " + meta->type + ": " + e.what());
+    response = wire::ErrorMessage(meta->request_id,
+                                  DbError::Internal("Internal server error."));
+  }
+  if (response)
+    _sink(conn.conn_id, std::move(*response), encoding);
 }
-// Insert handler
-// std::expected<InsertResponse, PodHandlerError>
-// insert_handler(StorageDriver &d, InsertRequest &packet) {
-//   std::vector<std::string> path = splitPath(packet.path);
-//   // This validates if a path is correct or not.
-//   // ['users', 'user'] means user is an ID (document) since array is even. if
-//   // ['users', 'user', 'music'] was the path, this means users is a
-//   collection,
-//   // user is a single document and music is a collection inside user hence we
-//   // will need to append data to end of the path to facilitate insertion
-//   if (path.size() % 2 == 0) {
-//     boost::uuids::time_generator_v7 gen;
-//     // Generate the UUID
-//     boost::uuids::uuid uuid = gen();
-//     // This is a heap allocation on to_string can be optimized but I am not
-//     that
-//     // smart with C++ as of now
-//     path.push_back(boost::uuids::to_string(uuid));
-//     Log(LogLevel::Info, "pod/insert_handler",
-//         "Recieved `path` for a collection instead of a document. DocumentId("
-//         +
-//             boost::uuids::to_string(uuid) + ")");
-//   }
-//   Log(LogLevel::Info, "pod/insert_handler",
-//       "Recieved `path` for a document. Attempting to save MessagePack "
-//       "contents");
 
-//   // Were saving text based documents in MessagePack binary format
-//   std::vector<uint8_t> binary_data = json::to_msgpack(packet.document_data);
-//   Log(LogLevel::Info, "pod/insert_handler",
-//       "Successfully converted content to MessagePack buffer");
+std::optional<json> RequestHandler::Dispatch(const ConnectionInfo &conn,
+                                             const json &message,
+                                             const std::string &type,
+                                             const std::string &request_id,
+                                             WireEncoding encoding) {
+  auto error = [&](const DbError &e) {
+    return std::optional<json>(wire::ErrorMessage(request_id, e));
+  };
 
-//   const auto write_path = joinPath(path);
-//   Log(LogLevel::Info, "pod/insert_handler",
-//       "Joining path to get final writePath (" + write_path + ")");
-//   const auto db_status = d.Put(write_path, binary_data);
-//   if (!db_status.is_ok) {
-//     PodHandlerError err;
-//     err.reason = "Database write failed: " + db_status.message;
-//     Log(LogLevel::Error, "pod/insert_handler",
-//         "Database write failed: " + db_status.message);
-//     // std::unexpected routes this to the error channel of std::expected
-//     return std::unexpected(err);
-//   }
-//   Log(LogLevel::Info, "pod/insert_handler",
-//       "Successfully saved document in database");
+  if (type == "READ") {
+    auto req = wire::ParseRead(message);
+    if (!req)
+      return error(req.error());
+    auto doc = _db.Read(conn.ns, req->path);
+    if (!doc)
+      return error(doc.error());
+    json document;
+    if (*doc)
+      document = wire::DocumentJson(**doc, {});
+    else
+      document = json{{"path", req->path.ToString()},
+                      {"data", nullptr},
+                      {"_v", nullptr}};
+    // A missing document is not an error: status 404 with data = null.
+    return json{{"meta", wire::AckMeta(request_id, *doc ? 200 : 404)},
+                {"payload", {{"document", std::move(document)}}}};
+  }
 
-//   InsertResponse response = {
-//       .meta = {.request_id = packet.meta.request_id,
-//                .action = "insert-ack"}, // Echo back the request metadata
-//                                         // (important for the client!)
-//       .error = 0,                       // 0 means no error
-//       .status = 200,                    // HTTP-style success code
-//       .path = write_path // Tell the client exactly where it was saved
-//   };
-//   Log(LogLevel::Info, "pod/insert_handler",
-//       "Returning InsertResponse with insert-ack");
-//   return response;
-// };
+  if (type == "QUERY") {
+    auto req = wire::ParseQuery(message);
+    if (!req)
+      return error(req.error());
+    auto page = _db.Query(conn.ns, req->path, req->spec, req->cursor);
+    if (!page)
+      return error(page.error());
+    json docs = json::array();
+    for (const auto &d : page->documents)
+      docs.push_back(wire::DocumentJson(d, req->spec.project));
+    return json{{"meta", wire::AckMeta(request_id, 200)},
+                {"payload",
+                 {{"documents", std::move(docs)},
+                  {"has_more", page->has_more},
+                  {"next_cursor", page->next_cursor
+                                      ? json(*page->next_cursor)
+                                      : json(nullptr)},
+                  {"plan",
+                   {{"index", page->index_used ? json(*page->index_used)
+                                               : json(nullptr)},
+                    {"documents_scanned", page->documents_scanned}}}}}};
+  }
 
-// Get handler
-std::expected<ReadResponse, ErrorResponse> read_handler(StorageDriver &d,
-                                                        ReadRequest &packet) {
-  std::vector<std::string> path = splitPath(packet.payload.path);
-  /* Invalid document path */
-  if (path.size() % 2 == 0)
-    return std::unexpected(ErrorResponse{
-        .meta =
-            AckMetaGeneric{
-                .type = "ACK",
-                .request_id = packet.meta.request_id,
-                .timestamp = current_iso8601_timestamp(),
-                .status = 400,
-            },
-        .payload = ErrorPayload{
-            .code = "INVALID_PATH",
-            .message = "Got collection path for a document level read.",
-        }});
-  // Were saving text based documents in MessagePack binary format
-  const auto read_path = joinPath(path);
-  const auto [db_status, value] = d.Get(read_path);
-  if (!db_status.is_ok)
-    return std::unexpected(
-        ErrorResponse{.meta =
-                          AckMetaGeneric{
-                              .type = "ACK",
-                              .request_id = packet.meta.request_id,
-                              .timestamp = current_iso8601_timestamp(),
-                              .status = 401,
-                          },
-                      .payload = ErrorPayload{
-                          .code = "INTERNAL_READ_FAILED",
-                          .message = db_status.message,
-                      }});
+  if (type == "CREATE_INDEX") {
+    auto req = wire::ParseCreateIndex(message);
+    if (!req)
+      return error(req.error());
+    auto result = _db.CreateIndex(conn.ns, *req);
+    if (!result)
+      return error(result.error());
+    return json{{"meta", wire::AckMeta(request_id, result->created ? 201 : 200)},
+                {"payload",
+                 {{"index", result->index.ToJson()},
+                  {"documents_indexed", result->documents_indexed}}}};
+  }
 
-  if (db_status.is_not_found)
-    return ReadResponse{.meta =
-                            AckMetaGeneric{
-                                .type = "ACK",
-                                .request_id = packet.meta.request_id,
-                                .timestamp = current_iso8601_timestamp(),
-                                .status = 404,
-                            },
-                        .payload = ReadResponsePayload{}};
+  if (type == "DROP_INDEX") {
+    auto id = wire::ParseDropIndex(message);
+    if (!id)
+      return error(id.error());
+    auto ok = _db.DropIndex(conn.ns, *id);
+    if (!ok)
+      return error(ok.error());
+    return json{{"meta", wire::AckMeta(request_id, 200)},
+                {"payload", {{"id", *id}, {"status", "DROPPED"}}}};
+  }
 
-  auto data = json::from_msgpack(value);
-  auto r = ReadResponse{.meta =
-                            AckMetaGeneric{
-                                .type = "ACK",
-                                .request_id = packet.meta.request_id,
-                                .timestamp = current_iso8601_timestamp(),
-                                .status = 200,
-                            },
-                        .payload = ReadResponsePayload{.document = {
-                                                           .path = read_path,
-                                                           .data = data,
-                                                       }}};
-  return r;
-};
+  if (type == "LIST_INDEXES") {
+    json list = json::array();
+    for (const auto &d : _db.ListIndexes(conn.ns))
+      list.push_back(d.ToJson());
+    return json{{"meta", wire::AckMeta(request_id, 200)},
+                {"payload", {{"indexes", std::move(list)}}}};
+  }
+
+  if (type == "WRITE") {
+    auto req = wire::ParseWrite(message);
+    if (!req)
+      return error(req.error());
+    auto result = _db.Write(conn.ns, req->path, req->data, req->merge);
+    if (!result)
+      return error(result.error());
+    return json{
+        {"meta", wire::AckMeta(request_id, result->created ? 201 : 200)},
+        {"payload", {{"path", result->path}, {"_v", result->version}}}};
+  }
+
+  if (type == "DELETE") {
+    auto req = wire::ParseDelete(message);
+    if (!req)
+      return error(req.error());
+    auto result = _db.Delete(conn.ns, req->path);
+    if (!result)
+      return error(result.error());
+    return json{{"meta", wire::AckMeta(request_id, 200)},
+                {"payload",
+                 {{"target", result->is_collection ? "COLLECTION" : "DOCUMENT"},
+                  {"path", result->path},
+                  {"affected_count", result->affected_count}}}};
+  }
+
+  if (type == "MUTATE_MANY") {
+    auto req = wire::ParseMutateMany(message);
+    if (!req)
+      return error(req.error());
+    auto result =
+        _db.MutateMany(conn.ns, req->path, req->where, req->remove, req->set);
+    if (!result)
+      return error(result.error());
+    return json{{"meta", wire::AckMeta(request_id, 200)},
+                {"payload",
+                 {{"path", result->path},
+                  {"affected_count", result->affected_count}}}};
+  }
+
+  if (type == "SUBSCRIBE") {
+    auto req = wire::ParseSubscribe(message);
+    if (!req)
+      return error(req.error());
+    json ack{{"meta", wire::AckMeta(request_id, 200)},
+             {"payload",
+              {{"subscription_id", req->subscription_id},
+               {"status", "SUBSCRIBED"}}}};
+    auto ok = _subs.Subscribe(
+        conn.conn_id, conn.ns, encoding, std::move(ack),
+        SubscribeParams{std::move(req->subscription_id), std::move(req->path),
+                        std::move(req->spec), std::move(req->resume_token),
+                        Visibility{}});
+    if (!ok)
+      return error(ok.error());
+    return std::nullopt; // ACK and SNAPSHOT were sent by the manager in order
+  }
+
+  if (type == "UNSUBSCRIBE") {
+    auto req = wire::ParseUnsubscribe(message);
+    if (!req)
+      return error(req.error());
+    auto ok = _subs.Unsubscribe(conn.conn_id, req->subscription_id);
+    if (!ok)
+      return error(ok.error());
+    return json{{"meta", wire::AckMeta(request_id, 200)},
+                {"payload",
+                 {{"subscription_id", req->subscription_id},
+                  {"status", "UNSUBSCRIBED"}}}};
+  }
+
+  if (type == "ACK") {
+    // Client acknowledgement of an EVENT; the protocol defines no reply.
+    auto ack = wire::ParseClientAck(message);
+    if (!ack) {
+      Log(LogLevel::Warn, "pod",
+          "Invalid client ACK on (" + conn.conn_id +
+              "): " + ack.error().message);
+      return std::nullopt;
+    }
+    auto ok = _subs.Acknowledge(conn.conn_id, ack->subscription_id,
+                                ack->resume_token);
+    if (!ok)
+      Log(LogLevel::Warn, "pod",
+          "Client ACK on (" + conn.conn_id + ") rejected: " +
+              ok.error().message);
+    return std::nullopt;
+  }
+
+  return error(DbError{400, "UNKNOWN_TYPE",
+                       "Unknown request type '" + type + "'.", std::nullopt});
+}
+
+} // namespace pod
