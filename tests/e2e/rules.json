@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {
+      "match": "users/{uid}",
+      "allow": {
+        "read": "auth != null && auth.uid == uid",
+        "write": "auth != null && auth.uid == uid"
+      }
+    },
+    {
+      "match": "public/{id}",
+      "allow": { "read": "true", "write": "auth != null" }
+    },
+    {
+      "match": "notes/{id}",
+      "allow": {
+        "read": "auth != null && resource.data.owner == auth.uid",
+        "write": "auth != null && (resource == null || resource.data.owner == auth.uid) && (request.resource == null || request.resource.data.owner == auth.uid)"
+      }
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 // Request handlers for a Pod (single database node).
 #include "common/log.h"
+#include "common/timestamp.h"
 #include "network/ws/handlers/interface.h"
 #include "network/ws/wire_protocol.h"
 #include <exception>
@@ -7,10 +8,13 @@
 namespace pod {
 
 using json = nlohmann::json;
+using rules::Op;
 
 RequestHandler::RequestHandler(Database &db, SubscriptionManager &subscriptions,
+                               const rules::Authorizer &authorizer,
                                MessageSink sink)
-    : _db(db), _subs(subscriptions), _sink(std::move(sink)) {}
+    : _db(db), _subs(subscriptions), _authz(authorizer),
+      _sink(std::move(sink)) {}
 
 void RequestHandler::Handle(const ConnectionInfo &conn, std::string_view raw,
                             WireEncoding encoding) {
@@ -44,7 +48,7 @@ void RequestHandler::Handle(const ConnectionInfo &conn, std::string_view raw,
   }
 
   Log(LogLevel::Debug, "pod",
-      "(" + conn.conn_id + ") [" + conn.ns + "] " + meta->type + " " +
+      "(" + conn.conn_id + ") [" + conn.auth.ns + "] " + meta->type + " " +
           meta->request_id);
 
   std::optional<json> response;
@@ -69,21 +73,51 @@ std::optional<json> RequestHandler::Dispatch(const ConnectionInfo &conn,
   auto error = [&](const DbError &e) {
     return std::optional<json>(wire::ErrorMessage(request_id, e));
   };
+  const std::string &ns = conn.auth.ns;
+
+  if (type == "ACK") {
+    // Client acknowledgement of an EVENT; the protocol defines no reply.
+    auto ack = wire::ParseClientAck(message);
+    if (!ack) {
+      Log(LogLevel::Warn, "pod",
+          "Invalid client ACK on (" + conn.conn_id +
+              "): " + ack.error().message);
+      return std::nullopt;
+    }
+    auto ok = _subs.Acknowledge(conn.conn_id, ack->subscription_id,
+                                ack->resume_token);
+    if (!ok)
+      Log(LogLevel::Warn, "pod",
+          "Client ACK on (" + conn.conn_id + ") rejected: " +
+              ok.error().message);
+    return std::nullopt;
+  }
+
+  // An expired token must be refreshed by reconnecting.
+  if (conn.auth.Expired(current_unix_millis() / 1000))
+    return error(DbError::Unauthenticated(
+        "The connection's token has expired; reconnect with a new token."));
+
+  const ChangeGuard guard = _authz.MakeGuard(conn.auth);
+  const ChangeGuard *guard_ptr = guard ? &guard : nullptr;
 
   if (type == "READ") {
     auto req = wire::ParseRead(message);
     if (!req)
       return error(req.error());
-    auto doc = _db.Read(conn.ns, req->path);
+    auto doc = _db.Read(ns, req->path);
     if (!doc)
       return error(doc.error());
+    const std::string path = req->path.ToString();
+    if (!_authz.Allows(conn.auth, Op::Get, path, *doc ? &**doc : nullptr,
+                       nullptr))
+      return error(DbError::PermissionDenied("Missing permission to get '" +
+                                             path + "'."));
     json document;
     if (*doc)
       document = wire::DocumentJson(**doc, {});
     else
-      document = json{{"path", req->path.ToString()},
-                      {"data", nullptr},
-                      {"_v", nullptr}};
+      document = json{{"path", path}, {"data", nullptr}, {"_v", nullptr}};
     // A missing document is not an error: status 404 with data = null.
     return json{{"meta", wire::AckMeta(request_id, *doc ? 200 : 404)},
                 {"payload", {{"document", std::move(document)}}}};
@@ -93,7 +127,11 @@ std::optional<json> RequestHandler::Dispatch(const ConnectionInfo &conn,
     auto req = wire::ParseQuery(message);
     if (!req)
       return error(req.error());
-    auto page = _db.Query(conn.ns, req->path, req->spec, req->cursor);
+    // Security rules act as an additional filter: results are exactly the
+    // query over the documents this client may list.
+    const Visibility visible = _authz.MakeVisibility(conn.auth, Op::List);
+    auto page = _db.Query(ns, req->path, req->spec, req->cursor,
+                          visible ? &visible : nullptr);
     if (!page)
       return error(page.error());
     json docs = json::array();
@@ -112,43 +150,11 @@ std::optional<json> RequestHandler::Dispatch(const ConnectionInfo &conn,
                     {"documents_scanned", page->documents_scanned}}}}}};
   }
 
-  if (type == "CREATE_INDEX") {
-    auto req = wire::ParseCreateIndex(message);
-    if (!req)
-      return error(req.error());
-    auto result = _db.CreateIndex(conn.ns, *req);
-    if (!result)
-      return error(result.error());
-    return json{{"meta", wire::AckMeta(request_id, result->created ? 201 : 200)},
-                {"payload",
-                 {{"index", result->index.ToJson()},
-                  {"documents_indexed", result->documents_indexed}}}};
-  }
-
-  if (type == "DROP_INDEX") {
-    auto id = wire::ParseDropIndex(message);
-    if (!id)
-      return error(id.error());
-    auto ok = _db.DropIndex(conn.ns, *id);
-    if (!ok)
-      return error(ok.error());
-    return json{{"meta", wire::AckMeta(request_id, 200)},
-                {"payload", {{"id", *id}, {"status", "DROPPED"}}}};
-  }
-
-  if (type == "LIST_INDEXES") {
-    json list = json::array();
-    for (const auto &d : _db.ListIndexes(conn.ns))
-      list.push_back(d.ToJson());
-    return json{{"meta", wire::AckMeta(request_id, 200)},
-                {"payload", {{"indexes", std::move(list)}}}};
-  }
-
   if (type == "WRITE") {
     auto req = wire::ParseWrite(message);
     if (!req)
       return error(req.error());
-    auto result = _db.Write(conn.ns, req->path, req->data, req->merge);
+    auto result = _db.Write(ns, req->path, req->data, req->merge, guard_ptr);
     if (!result)
       return error(result.error());
     return json{
@@ -160,9 +166,14 @@ std::optional<json> RequestHandler::Dispatch(const ConnectionInfo &conn,
     auto req = wire::ParseDelete(message);
     if (!req)
       return error(req.error());
-    auto result = _db.Delete(conn.ns, req->path);
+    auto result = _db.Delete(ns, req->path, guard_ptr);
     if (!result)
       return error(result.error());
+    // Deleting a missing document is still subject to the delete rule.
+    if (!result->is_collection && result->affected_count == 0 &&
+        !_authz.Allows(conn.auth, Op::Delete, result->path, nullptr, nullptr))
+      return error(DbError::PermissionDenied(
+          "Missing permission to delete '" + result->path + "'."));
     return json{{"meta", wire::AckMeta(request_id, 200)},
                 {"payload",
                  {{"target", result->is_collection ? "COLLECTION" : "DOCUMENT"},
@@ -174,8 +185,8 @@ std::optional<json> RequestHandler::Dispatch(const ConnectionInfo &conn,
     auto req = wire::ParseMutateMany(message);
     if (!req)
       return error(req.error());
-    auto result =
-        _db.MutateMany(conn.ns, req->path, req->where, req->remove, req->set);
+    auto result = _db.MutateMany(ns, req->path, req->where, req->remove,
+                                 req->set, guard_ptr);
     if (!result)
       return error(result.error());
     return json{{"meta", wire::AckMeta(request_id, 200)},
@@ -184,22 +195,71 @@ std::optional<json> RequestHandler::Dispatch(const ConnectionInfo &conn,
                   {"affected_count", result->affected_count}}}};
   }
 
+  if (type == "CREATE_INDEX" || type == "DROP_INDEX" ||
+      type == "LIST_INDEXES") {
+    if (!_authz.IsAdmin(conn.auth))
+      return error(DbError::PermissionDenied(
+          "Index management requires an admin token."));
+    if (type == "CREATE_INDEX") {
+      auto req = wire::ParseCreateIndex(message);
+      if (!req)
+        return error(req.error());
+      auto result = _db.CreateIndex(ns, *req);
+      if (!result)
+        return error(result.error());
+      return json{
+          {"meta", wire::AckMeta(request_id, result->created ? 201 : 200)},
+          {"payload",
+           {{"index", result->index.ToJson()},
+            {"documents_indexed", result->documents_indexed}}}};
+    }
+    if (type == "DROP_INDEX") {
+      auto id = wire::ParseDropIndex(message);
+      if (!id)
+        return error(id.error());
+      auto ok = _db.DropIndex(ns, *id);
+      if (!ok)
+        return error(ok.error());
+      return json{{"meta", wire::AckMeta(request_id, 200)},
+                  {"payload", {{"id", *id}, {"status", "DROPPED"}}}};
+    }
+    json list = json::array();
+    for (const auto &d : _db.ListIndexes(ns))
+      list.push_back(d.ToJson());
+    return json{{"meta", wire::AckMeta(request_id, 200)},
+                {"payload", {{"indexes", std::move(list)}}}};
+  }
+
   if (type == "SUBSCRIBE") {
     auto req = wire::ParseSubscribe(message);
     if (!req)
       return error(req.error());
+    const bool is_document = req->path.IsDocument();
+    if (is_document) {
+      // A document listener requires permission to get the document now.
+      auto doc = _db.Read(ns, req->path);
+      if (!doc)
+        return error(doc.error());
+      const std::string path = req->path.ToString();
+      if (!_authz.Allows(conn.auth, Op::Get, path, *doc ? &**doc : nullptr,
+                         nullptr))
+        return error(DbError::PermissionDenied(
+            "Missing permission to get '" + path + "'."));
+    }
     json ack{{"meta", wire::AckMeta(request_id, 200)},
              {"payload",
               {{"subscription_id", req->subscription_id},
                {"status", "SUBSCRIBED"}}}};
     auto ok = _subs.Subscribe(
-        conn.conn_id, conn.ns, encoding, std::move(ack),
+        conn.conn_id, ns, encoding, std::move(ack),
         SubscribeParams{std::move(req->subscription_id), std::move(req->path),
                         std::move(req->spec), std::move(req->resume_token),
-                        Visibility{}});
+                        _authz.MakeVisibility(conn.auth, is_document
+                                                             ? Op::Get
+                                                             : Op::List)});
     if (!ok)
       return error(ok.error());
-    return std::nullopt; // ACK and SNAPSHOT were sent by the manager in order
+    return std::nullopt; // ACK and events were sent by the manager in order
   }
 
   if (type == "UNSUBSCRIBE") {
@@ -213,24 +273,6 @@ std::optional<json> RequestHandler::Dispatch(const ConnectionInfo &conn,
                 {"payload",
                  {{"subscription_id", req->subscription_id},
                   {"status", "UNSUBSCRIBED"}}}};
-  }
-
-  if (type == "ACK") {
-    // Client acknowledgement of an EVENT; the protocol defines no reply.
-    auto ack = wire::ParseClientAck(message);
-    if (!ack) {
-      Log(LogLevel::Warn, "pod",
-          "Invalid client ACK on (" + conn.conn_id +
-              "): " + ack.error().message);
-      return std::nullopt;
-    }
-    auto ok = _subs.Acknowledge(conn.conn_id, ack->subscription_id,
-                                ack->resume_token);
-    if (!ok)
-      Log(LogLevel::Warn, "pod",
-          "Client ACK on (" + conn.conn_id + ") rejected: " +
-              ok.error().message);
-    return std::nullopt;
   }
 
   return error(DbError{400, "UNKNOWN_TYPE",

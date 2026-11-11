@@ -13,11 +13,14 @@ Roadmap:
 
 - [done] Create working database which is real-time fetchable via Websockets
 - [done] Namespaces (scopes): every connection is confined to one namespace
-- Add custom indexing via key-scoping e.g. id_author = value
-- Add snapshotting and delta resolution - 1st Client release
-- Add CEL and rules-engine
-- Write ahead logging
-- Resume tokens and Resume logs (tokens exist; a resume currently re-snapshots)
+- [done] Custom secondary indexes (composite, array-contains)
+- [done] Snapshotting and delta resolution
+- [done] CEL rules engine + HS256 token authentication
+- [done] Write-ahead commit log, resume tokens and delta resume
+- [done] Pods cluster router (namespace sharding over a consistent-hash ring)
+- [done] Node SDK (packages/node)
+- Online resharding / data migration when cluster membership changes
+- Replication
 
 ===============================================================================
 
@@ -27,8 +30,11 @@ src/storage     StorageDriver interface + LevelDB driver (atomic batches, prefix
 src/db          Database engine: paths, namespaces, key layout, documents,
                 field paths, query evaluation, CRUD / QUERY / MUTATE_MANY
 src/realtime    Subscriptions: snapshots, ordered deltas, resume tokens
+src/rules       CEL interpreter, HS256 JWT, security rules / authorizer
+src/server      Configuration, connection authentication, outbound registry
+src/cluster     Router <-> node link framing, TCP links, consistent-hash ring
 src/network/ws  Wire protocol parsing and request handlers
-src/entry       Standalone server (uWebSockets + thread pool)
+src/entry       Database node (standalone.cpp) and pods router (router.cpp)
 tests/unit      C++ unit tests (pod_tests)
 tests/e2e       End-to-end protocol tests (bun)
 bench           Load generator / benchmark (bun)
@@ -46,9 +52,18 @@ cmake --build build --parallel
 ./build/pod
 Clients connect to ws://localhost:3000/webchannel?ns=<namespace>
 
-Configuration is read from the environment (see .env.example):
-POD_PORT, POD_STORAGE_PATH, DEFAULT_NAMESPACE, POD_THREADS, POD_SYNC_WRITES,
-POD_LOG_LEVEL.
+Configuration is read from the environment; every variable is documented in
+.env.example.
+
+Security: POD_RULES_PATH=rules.json POD_AUTH_SECRET=... ./build/pod
+  Clients pass an HS256 JWT as ?t=<token>; see protocol/README.
+
+Cluster (two nodes behind a router):
+  POD_PORT=3001 POD_INTERNAL_PORT=4001 POD_STORAGE_PATH=./n1 POD_CLUSTER_SECRET=$S ./build/pod
+  POD_PORT=3002 POD_INTERNAL_PORT=4002 POD_STORAGE_PATH=./n2 POD_CLUSTER_SECRET=$S ./build/pod
+  POD_ROLE=router POD_PORT=3000 POD_CLUSTER_SECRET=$S \
+    POD_NODES=n1=127.0.0.1:4001,n2=127.0.0.1:4002 ./build/pod
+  Clients connect to the router exactly as to a single node.
 
 Development loop:
 watchexec -e cpp,h -r -- "cmake --build build --parallel --verbose && ./build/pod"
@@ -60,6 +75,7 @@ Testing:
 cmake --build build --target pod_tests && ./build/pod_tests
 cd tests/e2e && bun install && POD_BIN=../../build/pod bun test
   (or: tests/e2e/run-external.sh ./build/pod)
+tests/e2e/run-cluster.sh ./build/pod   (router, auth and rules suite)
 
 Benchmark:
 
@@ -70,3 +86,13 @@ Example app:
 
 bench/run.sh ./build/pod bun examples/web/demo.ts      (headless walkthrough)
 cd examples/web && bun run dev                         (browser UI)
+
+===============================================================================
+
+Client SDK (packages/node):
+
+@pod-db/node is the TypeScript client for Node, Bun and browsers: documents,
+queries, mutateMany, real-time listeners with resume across reconnects, index
+management and typed errors. See packages/node/README.md.
+cd packages/node && bun install && bun run typecheck && bun run test
+POD_URL=ws://127.0.0.1:3000/webchannel bun run test:integration  (running server)

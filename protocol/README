@@ -11,14 +11,24 @@ the Pod server implements.
 -------------------------------------------------------------------------------
 Connection & namespaces (scopes)
 -------------------------------------------------------------------------------
-ws://<host>:<port>/webchannel?ns=<namespace>
+ws://<host>:<port>/webchannel?ns=<namespace>&t=<token>
 
 The namespace is fixed for the lifetime of the connection and every request
 on it is confined to that namespace: the same path in two namespaces is two
 different documents, and subscriptions only see commits in their namespace.
 Without ?ns the server's DEFAULT_NAMESPACE (default "default") is used.
-Namespaces are 1-64 characters of [A-Za-z0-9_-]; anything else is rejected
-with HTTP 400 at upgrade time.
+Namespaces are 1-64 characters of [A-Za-z0-9_-].
+
+`t` is an optional token (see Authentication). Refused connections are
+accepted and then immediately closed with a code clients must NOT retry
+automatically (browsers cannot observe HTTP upgrade failures):
+  4400  invalid namespace
+  4401  token missing (POD_REQUIRE_AUTH), malformed, forged or expired, or
+        a token sent to a server without POD_AUTH_SECRET
+  4403  the token's "ns" claim does not include the namespace
+Other close codes are transient and clients should reconnect with backoff:
+  1013  try again later: backpressure limit exceeded (64 MiB queued), or,
+        via a router, the namespace's database node is unavailable
 
 Text frames carry JSON, binary frames carry MessagePack. Responses and events
 use the encoding of the request that caused them. Requests on one connection
@@ -86,14 +96,87 @@ Applying deltas in order to the client array reproduces the server's view:
   REMOVED   remove at old_index
   ADDED     insert at new_index
   MODIFIED  remove at old_index, then insert the new document at new_index
-resume_token is the database commit sequence number (a decimal string). A
-SUBSCRIBE with a resume_token that is not the current sequence receives
-RESET before the SNAPSHOT (no change log is retained yet). Clients ACK events
-with { meta: {type: "ACK", subscription_id}, payload: {resume_token} }; this
-has no reply. UNSUBSCRIBE replies UNSUBSCRIBED (NOT_FOUND if unknown).
-Closing the socket drops all its subscriptions. A client too slow to drain
+Every event carries resume_token (the commit sequence number, a decimal
+string) and commit_complete (true on the last event a commit produced for
+the subscription). A client's view is consistent with resume_token only after
+an event with commit_complete = true; that is the token to persist.
+SUBSCRIBE with a resume_token still covered by the server's commit log
+(POD_LOG_RETENTION commits, persisted with the data) answers resumed = true
+and sends only the deltas between the view at that token and now, then
+SYNCED. Otherwise (unknown or pruned token) it sends RESET then SNAPSHOT.
+Clients ACK events with { meta: {type: "ACK", subscription_id}, payload:
+{resume_token} }; this has no reply. UNSUBSCRIBE replies UNSUBSCRIBED
+(NOT_FOUND if unknown). Closing the socket drops all its subscriptions. A client too slow to drain
 its socket (64 MiB buffered) is disconnected rather than silently losing
 events, so it can resubscribe.
+
+-------------------------------------------------------------------------------
+Secondary indexes
+-------------------------------------------------------------------------------
+CREATE_INDEX { collection, fields: [{field, mode?}] } indexes every
+collection with that id (the last path segment, e.g. "posts" covers
+users/*/posts) in the namespace, backfilling existing documents. The id is
+deterministic ("posts:author,score"); 201 when created, 200 if it existed.
+Mode VALUE (default) indexes the value; ARRAY_CONTAINS indexes each element
+of an array (serves ARRAY.IN), at most one per index. An index is eligible
+for a QUERY only if every indexed field appears in its where or orderBy
+(documents missing an indexed field are not in the index). The planner binds
+leading index fields with EQUAL (ARRAY.IN for ARRAY_CONTAINS) filters, uses
+the next field for range bounds and ordering, and checks every remaining
+filter on the fetched documents, so results are identical with or without
+an index; QUERY's plan says which index (if any) was used. DROP_INDEX { id },
+LIST_INDEXES {}. With security rules configured, index management requires
+an admin token ("admin": true claim).
+
+-------------------------------------------------------------------------------
+Authentication
+-------------------------------------------------------------------------------
+Tokens are HS256 JWTs signed with the server's POD_AUTH_SECRET:
+  sub    required, the user id (auth.uid in rules)
+  exp    optional expiry (seconds); checked at connect (30 s leeway) and on
+         every request (no leeway): requests on a connection whose token has
+         expired fail with 401 UNAUTHENTICATED; reconnect with a new token
+  ns     optional string or array: namespaces the token may connect to
+  admin  optional, true allows index management
+  ...    any other claims are visible to rules as auth.token.<claim>
+Connections without a token are anonymous (auth == null) unless
+POD_REQUIRE_AUTH is set.
+
+-------------------------------------------------------------------------------
+Security rules
+-------------------------------------------------------------------------------
+POD_RULES_PATH points at a JSON file; without it the server is open (any
+client may do anything in its namespace). Format and semantics are
+documented in src/rules/rules.h. In short:
+  { "rules": [ { "match": "users/{uid}",
+                 "allow": { "read": "auth != null && auth.uid == uid" } } ] }
+Operations: get, list (read = both), create, update, delete (write = all
+three). An operation is allowed if any matching rule's CEL condition is
+true; no matching rule means denied. Enforcement:
+  READ           get on the document (also when it does not exist)
+  QUERY          documents failing list are silently left out
+  SUBSCRIBE      document: get up front; collection: documents failing list
+                 never appear in the snapshot or deltas
+  WRITE / DELETE / MUTATE_MANY
+                 every changed document is checked as create, update or
+                 delete; one denial aborts the whole commit (atomic)
+Denials are 403 PERMISSION_DENIED.
+
+-------------------------------------------------------------------------------
+Cluster (pods router)
+-------------------------------------------------------------------------------
+A router (POD_ROLE=router) speaks exactly this protocol to clients. It hashes
+each connection's namespace onto a consistent-hash ring of the nodes in
+POD_NODES and proxies the connection to the owning node over one
+authenticated TCP link per node (POD_INTERNAL_PORT on the node; mutual
+HMAC challenge-response over POD_CLUSTER_SECRET; framing in
+src/cluster/frame.h). A namespace lives on exactly one node, so queries,
+subscriptions, resume tokens and indexes behave as on a single node. Nodes
+re-authenticate every proxied connection with their own POD_AUTH_SECRET.
+If a node's link drops, its clients are closed with 1013 and should
+reconnect (resuming subscriptions); the router relinks with backoff.
+Membership is static: changing POD_NODES moves some namespaces to nodes that
+do not hold their data (no migration yet).
 
 -------------------------------------------------------------------------------
 Errors
@@ -104,7 +187,9 @@ Errors
   400 INVALID_ARGUMENT   bad payload field
   400 INVALID_PATH       malformed path or wrong path kind
   400 INVALID_CURSOR     cursor document missing / invalid
-  404 NOT_FOUND          unknown subscription
+  401 UNAUTHENTICATED    the connection's token has expired
+  403 PERMISSION_DENIED  denied by security rules / not an admin
+  404 NOT_FOUND          unknown subscription or index
   409 ALREADY_EXISTS     duplicate subscription_id
   413 DOCUMENT_TOO_LARGE encoded document over 4 MiB
   500 INTERNAL / DATA_CORRUPTION

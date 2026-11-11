@@ -8,7 +8,7 @@
 //
 //   POD_EXTERNAL_PORT=3000 bun test
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { decode, encode } from "@msgpack/msgpack";
+import { applyEvents, Client as BaseClient, refusal, type Msg } from "./client";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,115 +18,12 @@ const EXTERNAL_PORT = process.env.POD_EXTERNAL_PORT;
 const PORT = EXTERNAL_PORT ? Number(EXTERNAL_PORT) : 20000 + Math.floor(Math.random() * 20000);
 const storageDir = mkdtempSync(join(tmpdir(), "pod-e2e-"));
 let server: ReturnType<typeof Bun.spawn> | undefined;
+const HOST = `127.0.0.1:${PORT}`;
 
-type Msg = any;
-
-class Client {
-  ws!: WebSocket;
-  binary: boolean;
-  pending = new Map<string, (m: Msg) => void>();
-  events = new Map<string, Msg[]>(); // subscription_id -> EVENT frames
-  inbox: Msg[] = []; // every frame, in arrival order
-  waiters: Array<() => void> = [];
-  seq = 0;
-
-  constructor(binary = false) {
-    this.binary = binary;
+class Client extends BaseClient {
+  static open(ns?: string, binary = false): Promise<BaseClient> {
+    return BaseClient.connect(HOST, ns !== undefined ? { ns } : {}, binary);
   }
-
-  static async open(ns?: string, binary = false): Promise<Client> {
-    const c = new Client(binary);
-    const url = `ws://127.0.0.1:${PORT}/webchannel` + (ns !== undefined ? `?ns=${encodeURIComponent(ns)}` : "");
-    c.ws = new WebSocket(url);
-    c.ws.binaryType = "arraybuffer";
-    c.ws.onmessage = (e) => c.onFrame(e.data);
-    await new Promise<void>((resolve, reject) => {
-      c.ws.onopen = () => resolve();
-      c.ws.onerror = (e) => reject(e);
-      c.ws.onclose = () => reject(new Error("closed before open"));
-    });
-    c.ws.onclose = () => {};
-    return c;
-  }
-
-  onFrame(data: string | ArrayBuffer) {
-    const m: Msg = typeof data === "string" ? JSON.parse(data) : decode(new Uint8Array(data));
-    this.inbox.push(m);
-    if (m.meta?.type === "EVENT") {
-      const list = this.events.get(m.meta.subscription_id) ?? [];
-      list.push(m);
-      this.events.set(m.meta.subscription_id, list);
-    } else {
-      const r = this.pending.get(m.meta?.request_id);
-      if (r) {
-        this.pending.delete(m.meta.request_id);
-        r(m);
-      }
-    }
-    const w = this.waiters;
-    this.waiters = [];
-    w.forEach((f) => f());
-  }
-
-  sendRaw(packet: Msg) {
-    this.ws.send(this.binary ? encode(packet) : JSON.stringify(packet));
-  }
-
-  request(type: string, payload: Msg): Promise<Msg> {
-    const request_id = `r${++this.seq}`;
-    const p = new Promise<Msg>((resolve) => this.pending.set(request_id, resolve));
-    this.sendRaw({ meta: { type, request_id }, payload });
-    return p;
-  }
-
-  async waitFor(pred: () => boolean, ms = 3000) {
-    const deadline = Date.now() + ms;
-    while (!pred()) {
-      if (Date.now() > deadline) throw new Error("timed out waiting");
-      await new Promise<void>((r) => {
-        this.waiters.push(r);
-        setTimeout(r, 50);
-      });
-    }
-  }
-
-  async eventsFor(sub: string, count: number): Promise<Msg[]> {
-    await this.waitFor(() => (this.events.get(sub)?.length ?? 0) >= count);
-    return this.events.get(sub)!;
-  }
-
-  close() {
-    this.ws.close();
-  }
-}
-
-// Applies EVENT frames like a real client would.
-function applyEvents(events: Msg[]): string[] {
-  let docs: Msg[] = [];
-  for (const e of events) {
-    const p = e.payload;
-    switch (p.event_type) {
-      case "RESET":
-        docs = [];
-        break;
-      case "SNAPSHOT":
-        docs = p.snapshot.documents.map((d: Msg) => d);
-        break;
-      case "REMOVED":
-        expect(docs[p.delta.old_index].path).toBe(p.delta.path);
-        docs.splice(p.delta.old_index, 1);
-        break;
-      case "ADDED":
-        docs.splice(p.delta.new_index, 0, p.delta.document);
-        break;
-      case "MODIFIED":
-        expect(docs[p.delta.old_index].path).toBe(p.delta.path);
-        docs.splice(p.delta.old_index, 1);
-        docs.splice(p.delta.new_index, 0, p.delta.document);
-        break;
-    }
-  }
-  return docs.map((d) => `${d.path}:${JSON.stringify(d.data)}`);
 }
 
 beforeAll(async () => {
@@ -374,9 +271,16 @@ describe("namespaces", () => {
     explicit.close();
   });
 
-  test("invalid namespaces are rejected at upgrade", async () => {
-    await expect(Client.open("bad/ns")).rejects.toBeDefined();
-    await expect(Client.open("x".repeat(65))).rejects.toBeDefined();
+  test("invalid namespaces are refused with close code 4400", async () => {
+    for (const ns of ["bad/ns", "x".repeat(65)]) {
+      const r = await refusal(HOST, { ns });
+      expect(r.code).toBe(4400);
+      expect(r.reason.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("a token is refused when the server has no secret configured", async () => {
+    expect((await refusal(HOST, { ns: "a", t: "x.y.z" })).code).toBe(4401);
   });
 });
 

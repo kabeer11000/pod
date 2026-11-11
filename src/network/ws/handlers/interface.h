@@ -1,6 +1,8 @@
 #pragma once
 #include "db/database.h"
 #include "realtime/subscriptions.h"
+#include "rules/auth_context.h"
+#include "rules/rules.h"
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -8,19 +10,19 @@
 
 namespace pod {
 
-// Identity of the connection a request arrived on. `ns` is the namespace
-// (scope) fixed at WebSocket upgrade time; every operation is confined to it.
+// Identity of the connection a request arrived on. `auth.ns` is the
+// namespace (scope) fixed at connect time; every operation is confined to it.
 struct ConnectionInfo {
   std::string conn_id;
-  std::string ns;
+  AuthContext auth;
 };
 
-// Decodes, validates and executes one wire message, delivering every
-// response through the sink. Must be invoked serially per connection.
+// Decodes, validates, authorizes and executes one wire message, delivering
+// every response through the sink. Must be invoked serially per connection.
 class RequestHandler {
 public:
   RequestHandler(Database &db, SubscriptionManager &subscriptions,
-                 MessageSink sink);
+                 const rules::Authorizer &authorizer, MessageSink sink);
 
   void Handle(const ConnectionInfo &conn, std::string_view raw,
               WireEncoding encoding);
@@ -36,6 +38,7 @@ private:
 
   Database &_db;
   SubscriptionManager &_subs;
+  const rules::Authorizer &_authz;
   MessageSink _sink;
 };
 

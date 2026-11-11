@@ -6,7 +6,11 @@
 
 int main() {
   try {
-    const PodConfig config = LoadConfigFromEnv();
+    const pod::PodConfig config = pod::LoadConfigFromEnv();
+    if (config.role == "router") {
+      Log(LogLevel::Info, "main", "Starting Pods router");
+      return entry_router(config);
+    }
     Log(LogLevel::Info, "main",
         "Starting Pod (storage: " + config.storage_path + ")");
     LevelDBStorageDriver d(config.storage_path, config.sync_writes);

@@ -23,6 +23,15 @@ struct DbError {
   static DbError InvalidCursor(std::string msg) {
     return {400, "INVALID_CURSOR", std::move(msg), std::nullopt};
   }
+  static DbError Unauthenticated(std::string msg) {
+    return {401, "UNAUTHENTICATED", std::move(msg), std::nullopt};
+  }
+  static DbError PermissionDenied(std::string msg) {
+    return {403, "PERMISSION_DENIED", std::move(msg), std::nullopt};
+  }
+  static DbError Unavailable(std::string msg) {
+    return {503, "UNAVAILABLE", std::move(msg), std::nullopt};
+  }
   static DbError NotFound(std::string msg) {
     return {404, "NOT_FOUND", std::move(msg), std::nullopt};
   }
