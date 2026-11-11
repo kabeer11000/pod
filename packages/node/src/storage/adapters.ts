@@ -1,45 +1,79 @@
-import * as IDB from "idb-keyval";
+// Persistent cache used by real-time listeners to store their last
+// consistent view and resume token, so a new listener (or a reloaded page)
+// can show cached data immediately and resume with only the missed deltas.
 
-export class ImplementableStorageAdapter {
-    async set(key: string, value: any): Promise<void> {}
-    async get(key: string): Promise<any> {}
-    async remove(key: string): Promise<void> {}
+export interface StorageAdapter {
+  get(key: string): Promise<unknown>;
+  set(key: string, value: unknown): Promise<void>;
+  remove(key: string): Promise<void>;
 }
-export class IndexedDB implements ImplementableStorageAdapter {
-    private store: any;
 
-    constructor(collectionKey: string) {
-        this.store = IDB.createStore("pod-cache", collectionKey);
-    }
+/** Process-local cache (the default). Values are deep-copied. */
+export class MemoryStorageAdapter implements StorageAdapter {
+  private readonly store = new Map<string, unknown>();
 
-    async get(key: string): Promise<any> {
-        try {
-            return await IDB.get(key, this.store);
-        } catch (error) {
-            if (process.env.NODE_ENV === "development") {
-                console.warn("IndexedDB get failed:", error);
-            }
-            return undefined;
-        }
-    }
+  async get(key: string): Promise<unknown> {
+    const v = this.store.get(key);
+    return v === undefined ? undefined : structuredClone(v);
+  }
 
-    async remove(key: string): Promise<void> {
-        try {
-            await IDB.del(key, this.store);
-        } catch (error) {
-            if (process.env.NODE_ENV === "development") {
-                console.warn("IndexedDB remove failed:", error);
-            }
-        }
-    }
+  async set(key: string, value: unknown): Promise<void> {
+    this.store.set(key, structuredClone(value));
+  }
 
-    async set(key: string, value: any): Promise<void> {
-        try {
-            await IDB.set(key, value, this.store);
-        } catch (error) {
-            if (process.env.NODE_ENV === "development") {
-                console.warn("IndexedDB set failed:", error);
-            }
-        }
-    }
+  async remove(key: string): Promise<void> {
+    this.store.delete(key);
+  }
 }
+
+type IdbModule = typeof import("idb-keyval");
+type IdbStore = ReturnType<IdbModule["createStore"]>;
+
+/**
+ * Browser IndexedDB cache (via idb-keyval, loaded lazily so Node/Bun never
+ * import it unless this adapter is used). Failures degrade to cache misses.
+ */
+export class IndexedDBStorageAdapter implements StorageAdapter {
+  private handle: Promise<{ idb: IdbModule; store: IdbStore }> | null = null;
+
+  constructor(
+    private readonly databaseName = "pod-cache",
+    private readonly storeName = "listeners",
+  ) {}
+
+  private open() {
+    this.handle ??= import("idb-keyval").then((idb) => ({
+      idb,
+      store: idb.createStore(this.databaseName, this.storeName),
+    }));
+    return this.handle;
+  }
+
+  async get(key: string): Promise<unknown> {
+    try {
+      const { idb, store } = await this.open();
+      return await idb.get(key, store);
+    } catch {
+      return undefined;
+    }
+  }
+
+  async set(key: string, value: unknown): Promise<void> {
+    try {
+      const { idb, store } = await this.open();
+      await idb.set(key, value, store);
+    } catch {
+      // Cache writes are best effort.
+    }
+  }
+
+  async remove(key: string): Promise<void> {
+    try {
+      const { idb, store } = await this.open();
+      await idb.del(key, store);
+    } catch {
+      // Cache writes are best effort.
+    }
+  }
+}
+

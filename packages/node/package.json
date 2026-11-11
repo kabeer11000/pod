@@ -23,11 +23,14 @@
   },
   "scripts": {
     "clean": "rm -rf dist",
-    "build:esm": "bun build ./src/index.ts --outfile ./dist/index.js --target node --format esm",
-    "build:cjs": "bun build ./src/index.ts --outfile ./dist/index.cjs --target node --format cjs",
+    "build:esm": "bun build ./src/index.ts --outfile ./dist/index.js --target node --format esm --packages external",
+    "build:cjs": "bun build ./src/index.ts --outfile ./dist/index.cjs --target node --format cjs --packages external",
     "build:types": "tsc --emitDeclarationOnly --declaration --outDir ./dist",
     "build": "bun run clean && bun run build:esm && bun run build:cjs && bun run build:types",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run build",
+    "typecheck": "tsc --noEmit -p . && tsc -p tsconfig.test.json",
+    "test": "bun test test/unit",
+    "test:integration": "bun test test/integration"
   },
   "dependencies": {
     "@msgpack/msgpack": "^3.1.3",
